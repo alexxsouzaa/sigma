@@ -1,10 +1,36 @@
 // =============================================================================
-//  Project SIGMA - Sistema Inteligente para Gestão e Monitoramento de Ativos
+//  Project SIGMA - Sistema de Monitoramento Preditivo de Motor Industrial
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibração)
 //  Protocolo  : Serial 115200 baud (MQTT será adicionado futuramente)
 // =============================================================================
+//
+// -----------------------------------------------------------------------------
+//  HISTÓRICO DE VERSÕES (COMMITS)
+// -----------------------------------------------------------------------------
+//
+//  [v0.1.0] - 2026-06-25 - COMMIT SNAPSHOT (baseline)
+//  Autor  : Bruno Alex Souza da Silva
+//  Status : Estável — salvo antes da adição de calibração do MPU6050
+//  Resumo :
+//    - Leitura de temperatura via DS18B20 (1-Wire, GPIO4, pull-up 4.7kΩ)
+//    - Leitura de vibração via MPU6050 (I2C 400kHz, SDA=GPIO8, SCL=GPIO9)
+//    - Pull-ups externos 4.7kΩ no SDA e SCL
+//    - Cálculo de Health Score ponderado (Temp 40% + Vib 40% + Horas 20%)
+//    - Horímetro por software (millis)
+//    - Alarme em 3 níveis: NORMAL / AVISO / CRITICO
+//    - Retry x5 na inicialização do MPU6050 com checklist de diagnóstico
+//    - Relatório no Serial Monitor a cada 500 ms
+//    - Sem MQTT, sem display, sem LEDs
+//
+//  [v0.2.0] - 2026-06-25 - EM DESENVOLVIMENTO
+//  Resumo :
+//    - Adição de rotina de calibração de ponto zero do MPU6050
+//    - Offset calculado por média de 200 amostras em repouso no boot
+//    - Offsets aplicados em todas as leituras subsequentes
+//    - Opção de recalibrar via Serial Monitor enviando o comando 'C'
+// -----------------------------------------------------------------------------
 
 // -------------------------
 //  Bibliotecas necessárias
@@ -27,11 +53,11 @@
 // -------------------------
 //  Configurações do sistema
 // -------------------------
-#define INTERVALO_LEITURA_MS     100    // Intervalo entre leituras (milissegundos)
+#define INTERVALO_LEITURA_MS     500    // Intervalo entre leituras (milissegundos)
 #define INTERVALO_MANUTENCAO_H   500.0  // Horas entre manutenções preventivas
 #define TEMP_AVISO_MIN           25.0   // Temperatura mínima para operação normal (°C)
 #define TEMP_AVISO_MAX           55.0   // Temperatura máxima antes de gerar aviso (°C)
-#define TEMP_CRITICA             65.0   // Temperatura crítica — alarme máximo (°C)
+#define TEMP_CRITICA             65.0   // Temperatura crítica - alarme máximo (°C)
 #define VIB_AVISO                2.0    // Vibração em g para gerar aviso
 #define VIB_CRITICA              4.0    // Vibração em g para estado crítico
 
@@ -45,6 +71,7 @@ float calcularHealthScore(float temp, float vib, float horas);
 String classificarAlarme(float temp, float vib);
 String obterClassificacaoHealth(float score);
 void imprimirRelatorio();
+void calibrarPontoZero();
 
 OneWire         barramento1Wire(PINO_ONE_WIRE); // Barramento 1-Wire no pino definido
 DallasTemperature sensorTemp(&barramento1Wire); // Sensor DS18B20 no barramento
@@ -61,9 +88,97 @@ float         horimetro        = 0.0; // Horas de operação acumuladas
 float         healthScore      = 0.0; // Pontuação de saúde do motor (0–100%)
 String        statusAlarme     = "";  // Status do alarme: NORMAL / AVISO / CRITICO
 
+// -------------------------
+//  Offsets de calibração do MPU6050
+//  Calculados durante a rotina de ponto zero no boot.
+//  Subtraídos de cada leitura para compensar o erro estático do sensor.
+// -------------------------
+float offsetAX = 0.0;  // Offset do eixo X do acelerômetro (em g)
+float offsetAY = 0.0;  // Offset do eixo Y do acelerômetro (em g)
+float offsetAZ = 0.0;  // Offset do eixo Z — após remover 1g da gravidade
+bool  calibrado = false; // Flag: indica se a calibração já foi realizada
+
+// =============================================================================
+//  FUNÇÃO: calibrarPontoZero
+//
+//  Realiza a calibração estática do MPU6050 coletando 200 amostras em repouso.
+//  O sensor DEVE estar parado e nivelado durante esta operação.
+//
+//  O que faz:
+//    1. Coleta NUM_AMOSTRAS_CAL leituras brutas do acelerômetro
+//    2. Calcula a média de cada eixo (X, Y, Z)
+//    3. No eixo Z, subtrai 1g (gravidade) — o residual é o erro do sensor
+//    4. Armazena os offsets nas variáveis globais offsetAX, offsetAY, offsetAZ
+//    5. Define a flag 'calibrado = true'
+//
+//  Pode ser chamada novamente via Serial Monitor enviando o caractere 'C'.
+// =============================================================================
+void calibrarPontoZero() {
+  const int NUM_AMOSTRAS_CAL = 200; // Número de amostras para calcular o offset
+
+  Serial.println(F(""));
+  Serial.println(F("  ==============================================="));
+  Serial.println(F("  [CAL] INICIANDO CALIBRACAO DE PONTO ZERO"));
+  Serial.println(F("  [CAL] Mantenha o sensor PARADO e NIVELADO!"));
+  Serial.println(F("  [CAL] Coletando amostras..."));
+
+  float somaX = 0.0; // Acumulador do eixo X
+  float somaY = 0.0; // Acumulador do eixo Y
+  float somaZ = 0.0; // Acumulador do eixo Z
+
+  sensors_event_t accel, gyro, temp; // Estruturas de evento do sensor
+
+  for (int i = 0; i < NUM_AMOSTRAS_CAL; i++) {
+    mpu.getEvent(&accel, &gyro, &temp); // Lê os três eixos do acelerômetro
+
+    // Converte de m/s² para g e acumula cada eixo
+    somaX += accel.acceleration.x / 9.81;
+    somaY += accel.acceleration.y / 9.81;
+    somaZ += accel.acceleration.z / 9.81;
+
+    delay(5); // Pequena pausa entre amostras para evitar leituras duplicadas
+
+    // Imprime progresso a cada 50 amostras
+    if ((i + 1) % 50 == 0) {
+      Serial.print(F("  [CAL] "));
+      Serial.print(i + 1);
+      Serial.print(F(" / "));
+      Serial.print(NUM_AMOSTRAS_CAL);
+      Serial.println(F(" amostras coletadas..."));
+    }
+  }
+
+  // Calcula a média de cada eixo
+  offsetAX = somaX / NUM_AMOSTRAS_CAL;
+  offsetAY = somaY / NUM_AMOSTRAS_CAL;
+  // No eixo Z: o sensor deve ler +1g em repouso (gravidade).
+  // O offset é o que sobrar além de 1g — ou seja, o erro estático do sensor.
+  offsetAZ = (somaZ / NUM_AMOSTRAS_CAL) - 1.0;
+
+  calibrado = true; // Marca calibração como concluída
+
+  // Exibe resultado da calibração no Serial Monitor
+  Serial.println(F("  [CAL] Calibracao concluida!"));
+  Serial.println(F("  [CAL] ------- Offsets Calculados -------"));
+  Serial.print(F("  [CAL]   Offset AX : "));
+  Serial.print(offsetAX, 5);
+  Serial.println(F(" g"));
+  Serial.print(F("  [CAL]   Offset AY : "));
+  Serial.print(offsetAY, 5);
+  Serial.println(F(" g"));
+  Serial.print(F("  [CAL]   Offset AZ : "));
+  Serial.print(offsetAZ, 5);
+  Serial.println(F(" g"));
+  Serial.println(F("  [CAL] Offsets aplicados em todas as leituras."));
+  Serial.println(F("  [CAL] Para recalibrar, envie o caractere 'C' no Serial."));
+  Serial.println(F("  ==============================================="));
+  Serial.println();
+}
+
 // =============================================================================
 //  FUNÇÃO: calcularVibracaoRMS
 //  Lê 50 amostras do acelerômetro MPU6050 e calcula a magnitude RMS resultante.
+//  Aplica os offsets de calibração em cada eixo antes do cálculo.
 //  Subtrai 1g do eixo Z para remover o efeito da gravidade estática.
 //  Retorna: vibração em unidades g (força gravitacional)
 // =============================================================================
@@ -75,12 +190,18 @@ float calcularVibracaoRMS() {
   for (int i = 0; i < NUM_AMOSTRAS; i++) {
     mpu.getEvent(&accel, &gyro, &temp); // Lê todos os eixos do MPU6050
 
-    // Calcula magnitude 3D em m/s² e converte para g (1g = 9.81 m/s²)
+    // Converte de m/s² para g
     float ax = accel.acceleration.x / 9.81;
     float ay = accel.acceleration.y / 9.81;
-    float az = (accel.acceleration.z / 9.81) - 1.0; // Remove gravidade estática no eixo Z
+    float az = accel.acceleration.z / 9.81;
 
-    // Acumula o quadrado da magnitude resultante
+    // Aplica offsets de calibração — remove o erro estático de cada eixo
+    // (offsetAX/AY/AZ são zero até que calibrarPontoZero() seja chamada)
+    ax = ax - offsetAX;
+    ay = ay - offsetAY;
+    az = az - offsetAZ - 1.0; // Remove também a gravidade estática do eixo Z
+
+    // Acumula o quadrado da magnitude resultante dos 3 eixos
     somaQuadrados += (ax * ax) + (ay * ay) + (az * az);
   }
 
@@ -107,7 +228,7 @@ float calcularHealthScore(float temp, float vib, float horas) {
   if (temp <= TEMP_AVISO_MAX) {
     scoreTemp = 1.0; // Temperatura dentro do range normal
   } else if (temp >= TEMP_CRITICA) {
-    scoreTemp = 0.0; // Temperatura crítica — componente zerado
+    scoreTemp = 0.0; // Temperatura crítica - componente zerado
   } else {
     // Degradação linear entre TEMP_AVISO_MAX e TEMP_CRITICA
     scoreTemp = 1.0 - ((temp - TEMP_AVISO_MAX) / (TEMP_CRITICA - TEMP_AVISO_MAX));
@@ -120,7 +241,7 @@ float calcularHealthScore(float temp, float vib, float horas) {
   if (vib <= VIB_AVISO) {
     scoreVib = 1.0; // Vibração dentro do range normal
   } else if (vib >= VIB_CRITICA) {
-    scoreVib = 0.0; // Vibração crítica — componente zerado
+    scoreVib = 0.0; // Vibração crítica - componente zerado
   } else {
     // Degradação linear entre VIB_AVISO e VIB_CRITICA
     scoreVib = 1.0 - ((vib - VIB_AVISO) / (VIB_CRITICA - VIB_AVISO));
@@ -225,7 +346,7 @@ void imprimirRelatorio() {
 }
 
 // =============================================================================
-//  SETUP — Executado uma única vez na inicialização
+//  SETUP - Executado uma única vez na inicialização
 // =============================================================================
 void setup() {
   // Inicia comunicação serial para debug e monitoramento
@@ -242,7 +363,7 @@ void setup() {
   // Inicia I2C com pinos definidos e clock explícito de 400 kHz (Fast Mode)
   // IMPORTANTE: sem Wire.setClock() a biblioteca Adafruit pode falhar no begin()
   Wire.begin(PINO_MPU_SDA, PINO_MPU_SCL);
-  Wire.setClock(400000); // 400 kHz — Fast Mode I2C
+  Wire.setClock(400000); // 400 kHz - Fast Mode I2C
   delay(150); // Aguarda MPU6050 completar boot interno (mínimo 100 ms recomendado)
   Serial.println(F("  [I2C] Barramento I2C iniciado (400 kHz Fast Mode)."));
 
@@ -253,7 +374,7 @@ void setup() {
   for (int tentativa = 1; tentativa <= 5; tentativa++) {
     Serial.print(F("  [I2C] Tentativa "));
     Serial.print(tentativa);
-    Serial.print(F(" de 5 — procurando MPU6050 (0x68)..."));
+    Serial.print(F(" de 5 - procurando MPU6050 (0x68)..."));
     if (mpu.begin()) {
       mpuOk = true;
       Serial.println(F(" ENCONTRADO!"));
@@ -264,7 +385,7 @@ void setup() {
   }
 
   if (!mpuOk) {
-    // Todas as tentativas falharam — exibe checklist de diagnóstico
+    // Todas as tentativas falharam - exibe checklist de diagnóstico
     Serial.println(F(""));
     Serial.println(F("  [ERRO FATAL] MPU6050 nao encontrado!"));
     Serial.println(F("  Checklist de diagnostico:"));
@@ -276,7 +397,7 @@ void setup() {
     Serial.println(F("    5. Pino AD0 no 3.3V = endereco 0x69"));
     Serial.println(F("  Sistema pausado. Corrija a fiacao e reinicie."));
     while (true) {
-      delay(1000); // Trava o sistema — aguarda intervenção do usuário
+      delay(1000); // Trava o sistema - aguarda intervenção do usuário
     }
   }
   Serial.println(F("  [OK] MPU6050 inicializado com sucesso."));
@@ -294,6 +415,13 @@ void setup() {
   Serial.println(F("  [MPU] Filtro passa-baixa: 21 Hz"));
 
   // ------------------------------------------
+  //  Calibração de ponto zero do MPU6050
+  //  Executada automaticamente após a configuração do sensor.
+  //  O sensor deve estar em repouso neste momento.
+  // ------------------------------------------
+  calibrarPontoZero();
+
+  // ------------------------------------------
   //  Inicialização do DS18B20 (temperatura)
   // ------------------------------------------
   sensorTemp.begin(); // Inicia o barramento 1-Wire e detecta sensores
@@ -302,7 +430,7 @@ void setup() {
   Serial.println(qtdSensores);
 
   if (qtdSensores == 0) {
-    // Nenhum sensor de temperatura encontrado — avisa mas continua
+    // Nenhum sensor de temperatura encontrado - avisa mas continua
     Serial.println(F("  [AVISO] Nenhum DS18B20 detectado! Verifique pull-up e fiacao."));
   } else {
     // Configura resolução máxima de 12 bits (precisão de 0.0625°C)
@@ -316,6 +444,7 @@ void setup() {
 
   Serial.println(F("=============================================="));
   Serial.println(F("  Sistema pronto. Iniciando monitoramento..."));
+  Serial.println(F("  Dica: envie 'C' no Serial para recalibrar MPU"));
   Serial.println(F("=============================================="));
   Serial.println();
 }
@@ -325,6 +454,22 @@ void setup() {
 // =============================================================================
 void loop() {
   unsigned long agora = millis(); // Captura tempo atual em ms
+
+  // ------------------------------------------
+  //  Verifica comando de recalibração via Serial
+  //  Envie o caractere 'C' (maiúsculo) no Monitor Serial
+  //  para iniciar uma nova calibração de ponto zero.
+  //  O motor deve estar PARADO durante a recalibração.
+  // ------------------------------------------
+  if (Serial.available() > 0) {
+    char cmd = Serial.read(); // Lê o caractere enviado
+    if (cmd == 'C' || cmd == 'c') {
+      Serial.println(F("  [CMD] Comando de recalibracao recebido!"));
+      Serial.println(F("  [CMD] ATENCAO: Pare o motor antes de continuar."));
+      delay(2000); // Pausa de 2 segundos para o operador parar o motor
+      calibrarPontoZero(); // Executa nova calibração
+    }
+  }
 
   // Verifica se o intervalo de leitura foi atingido
   if (agora - ultimaLeitura >= INTERVALO_LEITURA_MS) {
