@@ -1,11 +1,13 @@
 // =============================================================================
 //  Project SIGMA - Sistema de Monitoramento Preditivo de Motor Industrial
+//  Codinome   : Project SIGMA
+//  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibração)
-//  Protocolo  : Serial 115200 baud (MQTT será adicionado futuramente)
+//  Protocolo  : Serial 115200 baud
+//  Versao     : 0.1.1.4
 // =============================================================================
-
 
 // -------------------------
 //  Bibliotecas necessárias
@@ -46,7 +48,10 @@ float calcularHealthScore(float temp, float vib, float horas);
 String classificarAlarme(float temp, float vib);
 String obterClassificacaoHealth(float score);
 void imprimirRelatorio();
-void calibrarPontoZero();
+bool calibrarPontoZero();          // Retorna true = concluída, false = abortada pelo usuário
+bool aguardarConfirmacaoSerial(uint32_t timeoutMs);
+bool confirmarSaidaCalibracao();    // Prompt de confirmação quando usuário pede para sair
+void menuPosCalibracao();           // Menu pós-calibração: Sair (S) ou Recalibrar (R)
 
 OneWire         barramento1Wire(PINO_ONE_WIRE); // Barramento 1-Wire no pino definido
 DallasTemperature sensorTemp(&barramento1Wire); // Sensor DS18B20 no barramento
@@ -72,6 +77,263 @@ float offsetAX = 0.0;  // Offset do eixo X do acelerômetro (em g)
 float offsetAY = 0.0;  // Offset do eixo Y do acelerômetro (em g)
 float offsetAZ = 0.0;  // Offset do eixo Z — após remover 1g da gravidade
 bool  calibrado = false; // Flag: indica se a calibração já foi realizada
+bool  emCalibracao = false; // Flag: bloqueia o loop de monitoramento durante calibração
+
+// =============================================================================
+//  FUNÇÃO: aguardarConfirmacaoSerial
+//
+//  Exibe um prompt interativo no Serial Monitor e aguarda resposta do usuário.
+//  O sistema fica bloqueado até receber 'S' (confirmar) ou 'N' (cancelar),
+//  ou até o tempo de timeout ser atingido.
+//
+//  Parâmetros:
+//    timeoutMs : tempo máximo de espera em milissegundos
+//
+//  Retorna:
+//    true  → usuário confirmou com 'S' ou 's'
+//    false → usuário cancelou com 'N'/'n' ou timeout atingido
+// =============================================================================
+bool aguardarConfirmacaoSerial(uint32_t timeoutMs) {
+  // Limpa qualquer dado residual no buffer serial antes de aguardar
+  while (Serial.available()) Serial.read();
+
+  Serial.println(F(""));
+  Serial.println(F("  +--------------------------------------------------+"));
+  Serial.println(F("  |          CONFIRMACAO NECESSARIA                  |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  Deseja iniciar a calibracao de ponto zero?      |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  >> IMPORTANTE: O sensor deve estar PARADO       |"));
+  Serial.println(F("  |     e NIVELADO antes de confirmar!               |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  Digite  S  para CONFIRMAR calibracao            |"));
+  Serial.println(F("  |  Digite  N  para CANCELAR e voltar ao monitor    |"));
+  Serial.println(F("  +--------------------------------------------------+"));
+
+  uint32_t inicio = millis(); // Marca o início da espera
+  uint32_t segundosRestantes = timeoutMs / 1000;
+  uint32_t ultimoSegundo = millis();
+
+  // Exibe o tempo restante no primeiro instante
+  Serial.print(F("  Aguardando resposta... tempo restante: "));
+  Serial.print(segundosRestantes);
+  Serial.print(F(" s   \r"));
+
+  // Loop de espera — verifica Serial a cada ciclo
+  while ((millis() - inicio) < timeoutMs) {
+
+    // Atualiza contador regressivo a cada segundo sem travar o loop
+    if ((millis() - ultimoSegundo) >= 1000) {
+      ultimoSegundo = millis();
+      segundosRestantes--;
+      Serial.print(F("  Aguardando resposta... tempo restante: "));
+      Serial.print(segundosRestantes);
+      Serial.print(F(" s   \r")); // \r sobrescreve a mesma linha no terminal
+    }
+
+    // Verifica se chegou um caractere no buffer serial
+    if (Serial.available() > 0) {
+      char resposta = Serial.read();
+
+      if (resposta == 'S' || resposta == 's') {
+        // Usuário confirmou — prosseguir com a calibração
+        Serial.println(F(""));
+        Serial.println(F("  [OK] Calibracao CONFIRMADA pelo usuario."));
+        return true;
+      }
+
+      if (resposta == 'N' || resposta == 'n') {
+        // Usuário cancelou — retornar ao monitoramento
+        Serial.println(F(""));
+        Serial.println(F("  [INFO] Calibracao CANCELADA pelo usuario."));
+        Serial.println(F("  [INFO] Retornando ao monitoramento normal..."));
+        return false;
+      }
+      // Qualquer outro caractere é ignorado — aguarda S ou N
+    }
+
+    delay(50); // Pequena pausa para não sobrecarregar o loop de espera
+  }
+
+  // Timeout atingido — cancela automaticamente por segurança
+  Serial.println(F(""));
+  Serial.println(F("  [TIMEOUT] Nenhuma resposta recebida em 30 segundos."));
+  Serial.println(F("  [TIMEOUT] Calibracao CANCELADA automaticamente."));
+  Serial.println(F("  [INFO] Retornando ao monitoramento normal..."));
+  return false;
+}
+
+// =============================================================================
+//  FUNÇÃO: confirmarSaidaCalibracao
+//
+//  Exibida quando o usuário envia 'X' durante a coleta de amostras.
+//  Pergunta se o usuário realmente quer abortar a calibração em andamento.
+//
+//  Retorna:
+//    true  → usuário confirmou saída (S) — calibração será abortada
+//    false → usuário cancelou saída (N) — calibração continua normalmente
+// =============================================================================
+bool confirmarSaidaCalibracao() {
+  // Limpa buffer serial antes de aguardar a resposta
+  while (Serial.available()) Serial.read();
+
+  Serial.println(F(""));
+  Serial.println(F("  +--------------------------------------------------+"));
+  Serial.println(F("  |         CONFIRMAR SAIDA DA CALIBRACAO?           |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  As amostras coletadas ate agora serao           |"));
+  Serial.println(F("  |  DESCARTADAS e os offsets NAO serao alterados.   |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  A calibracao anterior (se existir) e mantida.   |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  Digite  S  para SAIR da calibracao              |"));
+  Serial.println(F("  |  Digite  N  para CONTINUAR coletando amostras    |"));
+  Serial.println(F("  +--------------------------------------------------+"));
+
+  // Timeout de 60 segundos: se nao responder, cancela a saida e CONTINUA a coleta.
+  // Comportamento seguro: preferencia por NAO descartar amostras ja coletadas.
+  const uint32_t TIMEOUT_SAIDA_MS  = 60000;
+  uint32_t inicioEspera            = millis();
+  uint32_t segundosRestantes       = TIMEOUT_SAIDA_MS / 1000;
+  uint32_t ultimoSegundo           = millis();
+
+  Serial.print(F("  Aguardando resposta... tempo restante: "));
+  Serial.print(segundosRestantes);
+  Serial.print(F(" s   \r"));
+
+  while ((millis() - inicioEspera) < TIMEOUT_SAIDA_MS) {
+
+    // Atualiza contador regressivo a cada segundo
+    if ((millis() - ultimoSegundo) >= 1000) {
+      ultimoSegundo = millis();
+      segundosRestantes--;
+      Serial.print(F("  Aguardando resposta... tempo restante: "));
+      Serial.print(segundosRestantes);
+      Serial.print(F(" s   \r"));
+    }
+
+    if (Serial.available() > 0) {
+      char resposta = Serial.read();
+
+      if (resposta == 'S' || resposta == 's') {
+        // Usuario confirmou saida - abortar calibracao
+        Serial.println(F(""));
+        Serial.println(F("  [CAL] Saida CONFIRMADA. Calibracao abortada."));
+        Serial.println(F("  [CAL] Amostras parciais descartadas."));
+        return true;
+      }
+
+      if (resposta == 'N' || resposta == 'n') {
+        // Usuario desistiu de sair - continuar calibracao
+        Serial.println(F(""));
+        Serial.println(F("  [CAL] Saida CANCELADA. Retomando coleta de amostras..."));
+        return false;
+      }
+      // Qualquer outro caractere e ignorado - aguarda S ou N
+    }
+    delay(50);
+  }
+
+  // Timeout atingido - comportamento seguro: NAO abortar, continua a coleta
+  Serial.println(F(""));
+  Serial.println(F("  [TIMEOUT] Sem resposta em 60s. Coleta retomada automaticamente."));
+  return false; // false = nao sair, continuar calibrando
+}
+
+// =============================================================================
+//  FUNÇÃO: menuPosCalibracao
+//
+//  Exibida imediatamente após a calibração ser concluída com sucesso.
+//  Pergunta ao usuário se deseja sair ou realizar uma nova calibração.
+//
+//  Comandos aceitos:
+//    S (ou s) → Sai do menu e retoma o monitoramento normal
+//    R (ou r) → Reinicia uma nova calibração sem precisar reiniciar o sistema
+//
+//  Timeout de 60 segundos: se nao responder, sai automaticamente ao monitoramento.
+// =============================================================================
+void menuPosCalibracao() {
+  // Limpa qualquer dado residual no buffer serial antes de exibir o menu
+  while (Serial.available()) Serial.read();
+
+  Serial.println(F(""));
+  Serial.println(F("  +----------------------------------------------------+"));
+  Serial.println(F("  |         CALIBRACAO CONCLUIDA COM SUCESSO!          |"));
+  Serial.println(F("  |                                                    |"));
+  Serial.println(F("  |  O que deseja fazer agora?                        |"));
+  Serial.println(F("  |                                                    |"));
+  Serial.println(F("  |  Digite  S  para SAIR e voltar ao monitoramento   |"));
+  Serial.println(F("  |  Digite  R  para RECALIBRAR novamente             |"));
+  Serial.println(F("  |                                                    |"));
+  Serial.println(F("  |  Dica: recalibre sempre com o sensor em repouso!  |"));
+  Serial.println(F("  +----------------------------------------------------+"));
+
+  // Timeout de 60 segundos: se nao responder, sai automaticamente.
+  // Comportamento seguro: o monitoramento e retomado com os offsets aplicados.
+  const uint32_t TIMEOUT_MENU_MS = 60000;
+  uint32_t inicioMenu            = millis();
+  uint32_t segundosRestantes     = TIMEOUT_MENU_MS / 1000;
+  uint32_t ultimoSegundo         = millis();
+
+  Serial.print(F("  Aguardando resposta... tempo restante: "));
+  Serial.print(segundosRestantes);
+  Serial.print(F(" s   \r"));
+
+  while ((millis() - inicioMenu) < TIMEOUT_MENU_MS) {
+
+    // Atualiza contador regressivo a cada segundo
+    if ((millis() - ultimoSegundo) >= 1000) {
+      ultimoSegundo = millis();
+      segundosRestantes--;
+      Serial.print(F("  Aguardando resposta... tempo restante: "));
+      Serial.print(segundosRestantes);
+      Serial.print(F(" s   \r"));
+    }
+
+    if (Serial.available() > 0) {
+      char resposta = Serial.read();
+
+      if (resposta == 'S' || resposta == 's') {
+        // Usuario escolheu sair - retoma o monitoramento
+        Serial.println(F(""));
+        Serial.println(F("  [MENU] Saindo do menu de calibracao."));
+        Serial.println(F("  [MENU] Monitoramento retomado com os novos offsets."));
+        Serial.println();
+        emCalibracao = false; // Libera o loop de monitoramento
+        return;
+      }
+
+      if (resposta == 'R' || resposta == 'r') {
+        // Usuario escolheu recalibrar - inicia nova calibracao imediatamente
+        Serial.println(F(""));
+        Serial.println(F("  [MENU] Iniciando nova calibracao..."));
+        Serial.println(F("  [MENU] Certifique-se que o sensor esta PARADO e NIVELADO!"));
+        delay(1000); // Pequena pausa para o usuario posicionar o sensor
+
+        // Chama calibracao diretamente (sem prompt de confirmacao novamente,
+        // pois o usuario ja demonstrou intencao explicita ao pressionar R)
+        bool calOk = calibrarPontoZero();
+
+        if (!calOk) {
+          // Nova calibracao foi abortada durante a coleta
+          // emCalibracao ja foi liberado dentro de calibrarPontoZero()
+          return;
+        }
+        // Se calOk == true: calibrarPontoZero() chamou menuPosCalibracao() novamente
+        // (recursao controlada) - o retorno chega aqui e sai do loop atual
+        return;
+      }
+      // Qualquer outro caractere e ignorado - aguarda S ou R
+    }
+    delay(50);
+  }
+
+  // Timeout atingido - sai automaticamente ao monitoramento
+  Serial.println(F(""));
+  Serial.println(F("  [TIMEOUT] Sem resposta em 60s. Retornando ao monitoramento."));
+  Serial.println();
+  emCalibracao = false; // Libera o loop de monitoramento
+}
 
 // =============================================================================
 //  FUNÇÃO: calibrarPontoZero
@@ -81,25 +343,31 @@ bool  calibrado = false; // Flag: indica se a calibração já foi realizada
 //
 //  O que faz:
 //    1. Coleta NUM_AMOSTRAS_CAL leituras brutas do acelerômetro
-//    2. Calcula a média de cada eixo (X, Y, Z)
-//    3. No eixo Z, subtrai 1g (gravidade) — o residual é o erro do sensor
-//    4. Armazena os offsets nas variáveis globais offsetAX, offsetAY, offsetAZ
-//    5. Define a flag 'calibrado = true'
+//    2. Verifica a cada amostra se o usuário enviou 'X' para sair
+//    3. Se 'X' for recebido, pergunta se quer realmente sair (S/N)
+//    4. Se confirmar saída: descarta amostras parciais e retorna false
+//    5. Se concluída: calcula offsets, aplica e retorna true
 //
-//  Pode ser chamada novamente via Serial Monitor enviando o caractere 'C'.
+//  Retorna:
+//    true  → calibração concluída com sucesso, offsets atualizados
+//    false → calibração abortada pelo usuário, offsets NÃO alterados
 // =============================================================================
-void calibrarPontoZero() {
+bool calibrarPontoZero() {
   const int NUM_AMOSTRAS_CAL = 200; // Número de amostras para calcular o offset
 
   Serial.println(F(""));
   Serial.println(F("  ==============================================="));
   Serial.println(F("  [CAL] INICIANDO CALIBRACAO DE PONTO ZERO"));
   Serial.println(F("  [CAL] Mantenha o sensor PARADO e NIVELADO!"));
+  Serial.println(F("  [CAL] Dica: envie 'X' a qualquer momento para sair."));
   Serial.println(F("  [CAL] Coletando amostras..."));
 
+  // Acumuladores temporários — só são transferidos para os offsets globais
+  // se a calibração for CONCLUÍDA. Se abortada, os offsets anteriores são mantidos.
   float somaX = 0.0; // Acumulador do eixo X
   float somaY = 0.0; // Acumulador do eixo Y
   float somaZ = 0.0; // Acumulador do eixo Z
+  int   amostrasColetadas = 0; // Contador de amostras válidas coletadas
 
   sensors_event_t accel, gyro, temp; // Estruturas de evento do sensor
 
@@ -110,6 +378,7 @@ void calibrarPontoZero() {
     somaX += accel.acceleration.x / 9.81;
     somaY += accel.acceleration.y / 9.81;
     somaZ += accel.acceleration.z / 9.81;
+    amostrasColetadas++; // Contabiliza amostra válida
 
     delay(5); // Pequena pausa entre amostras para evitar leituras duplicadas
 
@@ -119,21 +388,63 @@ void calibrarPontoZero() {
       Serial.print(i + 1);
       Serial.print(F(" / "));
       Serial.print(NUM_AMOSTRAS_CAL);
-      Serial.println(F(" amostras coletadas..."));
+      Serial.println(F(" amostras coletadas... (envie 'X' para sair)"));
+    }
+
+    // ---------------------------------------------------------------
+    //  Verifica se o usuário enviou 'X' para interromper a calibração
+    //  Verificado a cada amostra para resposta imediata
+    // ---------------------------------------------------------------
+    if (Serial.available() > 0) {
+      char tecla = Serial.read();
+
+      if (tecla == 'X' || tecla == 'x') {
+        Serial.println(F(""));
+        Serial.print(F("  [CAL] Comando de saida recebido apos "));
+        Serial.print(amostrasColetadas);
+        Serial.println(F(" amostras."));
+
+        // Pergunta se realmente quer sair
+        bool sairConfirmado = confirmarSaidaCalibracao();
+
+        if (sairConfirmado) {
+          // Usuário confirmou saída — descarta tudo e retorna
+          Serial.println(F("  [CAL] Calibracao ABORTADA pelo usuario."));
+          Serial.println(F("  [CAL] Offsets anteriores mantidos sem alteraçao."));
+          if (!calibrado) {
+            // Nunca teve calibração antes — avisa sobre offsets zerados
+            Serial.println(F("  [CAL] ATENCAO: Nenhuma calibracao ativa. Offsets = 0."));
+            Serial.println(F("  [CAL] Leituras podem conter erro estatico do sensor."));
+          }
+          Serial.println(F("  [CAL] Envie 'C' para tentar calibrar novamente."));
+          Serial.println(F("  ==============================================="));
+          Serial.println();
+          emCalibracao = false; // Libera o loop de monitoramento
+          return false;         // Sinaliza que calibração não foi concluída
+        }
+        // Usuário escolheu continuar — o for prossegue normalmente
+      }
+      // Qualquer outro caractere durante a coleta é ignorado
     }
   }
 
-  // Calcula a média de cada eixo
+  // ---------------------------------------------------------------
+  //  Calibração concluída — calcula e aplica os offsets globais
+  // ---------------------------------------------------------------
+
+  // Calcula a média de cada eixo a partir dos acumuladores
   offsetAX = somaX / NUM_AMOSTRAS_CAL;
   offsetAY = somaY / NUM_AMOSTRAS_CAL;
   // No eixo Z: o sensor deve ler +1g em repouso (gravidade).
-  // O offset é o que sobrar além de 1g — ou seja, o erro estático do sensor.
-  offsetAZ = (somaZ / NUM_AMOSTRAS_CAL) - 1.0;
+  // O offset é a média BRUTA do eixo Z — inclui o 1g da gravidade.
+  // A subtração de 1g é feita UMA única vez dentro de calcularVibracaoRMS().
+  // IMPORTANTE: NÃO subtrair 1g aqui para evitar dupla remoção de gravidade.
+  offsetAZ = somaZ / NUM_AMOSTRAS_CAL;
 
   calibrado = true; // Marca calibração como concluída
 
   // Exibe resultado da calibração no Serial Monitor
-  Serial.println(F("  [CAL] Calibracao concluida!"));
+  Serial.println(F("  [CAL] Calibracao concluida com sucesso!"));
   Serial.println(F("  [CAL] ------- Offsets Calculados -------"));
   Serial.print(F("  [CAL]   Offset AX : "));
   Serial.print(offsetAX, 5);
@@ -143,18 +454,28 @@ void calibrarPontoZero() {
   Serial.println(F(" g"));
   Serial.print(F("  [CAL]   Offset AZ : "));
   Serial.print(offsetAZ, 5);
-  Serial.println(F(" g"));
+  Serial.println(F(" g  (bruto, inclui ~1g de gravidade)"));
+  Serial.println(F("  [CAL]   -> Az corrigido em leitura: offsetAZ - 1g aplicado em calcularVibracaoRMS()"));
   Serial.println(F("  [CAL] Offsets aplicados em todas as leituras."));
-  Serial.println(F("  [CAL] Para recalibrar, envie o caractere 'C' no Serial."));
   Serial.println(F("  ==============================================="));
   Serial.println();
+
+  // ---------------------------------------------------------------
+  //  Exibe menu pós-calibração:
+  //  Usuário escolhe entre SAIR (S) ou RECALIBRAR (R)
+  //  A função gerencia o flag emCalibracao internamente
+  // ---------------------------------------------------------------
+  menuPosCalibracao();
+
+  return true; // Sinaliza calibração concluída com sucesso
 }
 
 // =============================================================================
 //  FUNÇÃO: calcularVibracaoRMS
 //  Lê 50 amostras do acelerômetro MPU6050 e calcula a magnitude RMS resultante.
 //  Aplica os offsets de calibração em cada eixo antes do cálculo.
-//  Subtrai 1g do eixo Z para remover o efeito da gravidade estática.
+//  O offsetAZ já contém ~1g (gravidade), portanto ao subtrair o offset
+//  a gravidade estática é removida automaticamente — sem dupla subtração.
 //  Retorna: vibração em unidades g (força gravitacional)
 // =============================================================================
 float calcularVibracaoRMS() {
@@ -170,14 +491,19 @@ float calcularVibracaoRMS() {
     float ay = accel.acceleration.y / 9.81;
     float az = accel.acceleration.z / 9.81;
 
-    // Aplica offsets de calibração — remove o erro estático de cada eixo
+    // Aplica offsets de calibração — remove o erro estático de cada eixo.
     // (offsetAX/AY/AZ são zero até que calibrarPontoZero() seja chamada)
     ax = ax - offsetAX;
     ay = ay - offsetAY;
-    az = az - offsetAZ - 1.0; // Remove também a gravidade estática do eixo Z
+    // Eixo Z: subtrai o offset bruto (que já contém ~1g) para remover gravidade.
+    // offsetAZ ≈ 1g em repouso ideal → após a subtração az ≈ 0g em repouso.
+    // A gravidade é removida AQUI, uma única vez. Não é removida no calibrar().
+    az = az - offsetAZ;
 
     // Acumula o quadrado da magnitude resultante dos 3 eixos
     somaQuadrados += (ax * ax) + (ay * ay) + (az * az);
+
+    delay(2); // Aguarda nova amostra do MPU6050 — evita leituras duplicadas em cache
   }
 
   // Retorna a raiz quadrada da média dos quadrados (RMS)
@@ -329,7 +655,7 @@ void setup() {
   delay(500); // Aguarda estabilização da porta serial
 
   Serial.println(F("=============================================="));
-  Serial.println(F("  Project SIGMA - Iniciando Sistema...       "));
+  Serial.println(F("  Project SIGMA v0.1.1.4 - Iniciando Sistema..."));
   Serial.println(F("=============================================="));
 
   // ------------------------------------------
@@ -391,10 +717,32 @@ void setup() {
 
   // ------------------------------------------
   //  Calibração de ponto zero do MPU6050
-  //  Executada automaticamente após a configuração do sensor.
-  //  O sensor deve estar em repouso neste momento.
+  //  Pergunta ao usuário se deseja calibrar antes de prosseguir.
+  //  Timeout de 30 segundos: se não responder, calibração é pulada.
+  //  Os offsets permanecem em zero até que uma calibração seja realizada.
   // ------------------------------------------
-  calibrarPontoZero();
+  Serial.println(F(""));
+  Serial.println(F("  [SIGMA] Calibracao de ponto zero disponivel."));
+
+  // Chama confirmação interativa com timeout de 30 segundos
+  emCalibracao = true;
+  bool usuarioConfirmou = aguardarConfirmacaoSerial(30000);
+
+  if (usuarioConfirmou) {
+    // Executa calibração — retorna true se concluída, false se abortada pelo usuário
+    bool calOk = calibrarPontoZero();
+    if (!calOk) {
+      // Usuário saiu durante a calibração no boot — offsets permanecem zerados
+      Serial.println(F("  [INFO] Calibracao interrompida no boot. Offsets = 0."));
+      Serial.println(F("  [INFO] Envie 'C' no Serial para calibrar quando pronto."));
+      Serial.println();
+    }
+  } else {
+    emCalibracao = false; // Garante liberação do flag mesmo sem calibrar
+    Serial.println(F("  [INFO] Calibracao pulada. Offsets zerados — leituras podem ter erro estatico."));
+    Serial.println(F("  [INFO] Envie 'C' a qualquer momento para calibrar."));
+    Serial.println();
+  }
 
   // ------------------------------------------
   //  Inicialização do DS18B20 (temperatura)
@@ -413,7 +761,10 @@ void setup() {
     Serial.println(F("  [DS18B20] Resolucao configurada: 12 bits (0.0625 oC)"));
   }
 
-  // Salva o momento de início para calcular horímetro
+  // Salva o momento de inicio APOS toda a inicializacao e calibracao.
+  // IMPORTANTE: atribuir aqui garante que o horimetro nao conta o tempo
+  // gasto no boot, na inicializacao dos sensores e na calibracao do MPU6050.
+  // O horimetro reflete apenas o tempo real de operacao do motor.
   inicioSistema = millis();
   ultimaLeitura = millis();
 
@@ -431,23 +782,43 @@ void loop() {
   unsigned long agora = millis(); // Captura tempo atual em ms
 
   // ------------------------------------------
-  //  Verifica comando de recalibração via Serial
-  //  Envie o caractere 'C' (maiúsculo) no Monitor Serial
-  //  para iniciar uma nova calibração de ponto zero.
-  //  O motor deve estar PARADO durante a recalibração.
+  //  Verifica comando de recalibracao via Serial
+  //  Envie o caractere 'C' (maiusculo ou minusculo) no Monitor Serial
+  //  para iniciar o fluxo interativo de recalibracao.
+  //  O sistema pergunta se o usuario deseja prosseguir antes de calibrar.
+  //  Se nao responder em 30 segundos, o comando e cancelado automaticamente.
   // ------------------------------------------
-  if (Serial.available() > 0) {
+  if (!emCalibracao && Serial.available() > 0) {
     char cmd = Serial.read(); // Lê o caractere enviado
+
     if (cmd == 'C' || cmd == 'c') {
+      Serial.println(F(""));
       Serial.println(F("  [CMD] Comando de recalibracao recebido!"));
-      Serial.println(F("  [CMD] ATENCAO: Pare o motor antes de continuar."));
-      delay(2000); // Pausa de 2 segundos para o operador parar o motor
-      calibrarPontoZero(); // Executa nova calibração
+      Serial.println(F("  [CMD] Monitoramento pausado durante o processo."));
+
+      emCalibracao = true; // Pausa o loop de leitura
+
+      // Exibe prompt de confirmação interativa com timeout de 30 segundos
+      bool confirmado = aguardarConfirmacaoSerial(30000);
+
+      if (confirmado) {
+        // Executa calibração — retorna true se concluída, false se abortada
+        bool calOk = calibrarPontoZero();
+        if (!calOk) {
+          // Usuário saiu durante a coleta de amostras
+          Serial.println(F("  [INFO] Calibracao interrompida. Offsets anteriores mantidos."));
+          Serial.println(F("  [INFO] Monitoramento retomado normalmente."));
+          Serial.println();
+        }
+      } else {
+        emCalibracao = false; // Cancela e retorna ao monitoramento
+      }
     }
   }
 
   // Verifica se o intervalo de leitura foi atingido
-  if (agora - ultimaLeitura >= INTERVALO_LEITURA_MS) {
+  // O bloco de monitoramento é ignorado enquanto o sistema estiver em calibração
+  if (!emCalibracao && agora - ultimaLeitura >= INTERVALO_LEITURA_MS) {
     ultimaLeitura = agora; // Atualiza timestamp da última leitura
 
     // ------------------------------------------
