@@ -6,7 +6,7 @@
 //  Framework  : Arduino via PlatformIO
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibração)
 //  Protocolo  : Serial 115200 baud
-//  Versao     : 0.1.1.4
+//  Versao     : 0.1.1.2
 // =============================================================================
 
 // -------------------------
