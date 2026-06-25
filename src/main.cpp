@@ -5,32 +5,7 @@
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibração)
 //  Protocolo  : Serial 115200 baud (MQTT será adicionado futuramente)
 // =============================================================================
-//
-// -----------------------------------------------------------------------------
-//  HISTÓRICO DE VERSÕES (COMMITS)
-// -----------------------------------------------------------------------------
-//
-//  [v0.1.0] - 2026-06-25 - COMMIT SNAPSHOT (baseline)
-//  Autor  : Bruno Alex Souza da Silva
-//  Status : Estável — salvo antes da adição de calibração do MPU6050
-//  Resumo :
-//    - Leitura de temperatura via DS18B20 (1-Wire, GPIO4, pull-up 4.7kΩ)
-//    - Leitura de vibração via MPU6050 (I2C 400kHz, SDA=GPIO8, SCL=GPIO9)
-//    - Pull-ups externos 4.7kΩ no SDA e SCL
-//    - Cálculo de Health Score ponderado (Temp 40% + Vib 40% + Horas 20%)
-//    - Horímetro por software (millis)
-//    - Alarme em 3 níveis: NORMAL / AVISO / CRITICO
-//    - Retry x5 na inicialização do MPU6050 com checklist de diagnóstico
-//    - Relatório no Serial Monitor a cada 500 ms
-//    - Sem MQTT, sem display, sem LEDs
-//
-//  [v0.2.0] - 2026-06-25 - EM DESENVOLVIMENTO
-//  Resumo :
-//    - Adição de rotina de calibração de ponto zero do MPU6050
-//    - Offset calculado por média de 200 amostras em repouso no boot
-//    - Offsets aplicados em todas as leituras subsequentes
-//    - Opção de recalibrar via Serial Monitor enviando o comando 'C'
-// -----------------------------------------------------------------------------
+
 
 // -------------------------
 //  Bibliotecas necessárias
