@@ -6,7 +6,70 @@
 //  Framework  : Arduino via PlatformIO
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibracao)
 //  Protocolo  : Serial 115200 baud
-//  Versao     : 0.1.3.1
+//  Versao     : 0.1.3.2
+// =============================================================================
+//
+//  ROADMAP
+//  -------
+//  v0.1.x  Core local         [EM ANDAMENTO]
+//  v0.2.0  MQTT               [PLANNED]
+//  v0.3.0  Dashboard Node-RED [PLANNED]
+//  v0.5.0  Banco de Dados     [PLANNED]
+//  v0.6.0  API REST           [PLANNED]
+//  v0.7.0  Analytics          [PLANNED]
+//  v1.0.0  Release estavel    [PLANNED]
+//
+//  HISTORICO DE VERSOES
+//  --------------------
+//
+//  SERIE v0.1.x - Core Local
+//  -----------------------------------------------------------------
+//  [v0.1.0]     - 2026-06-25                                [RELEASED]
+//  Baseline core local - DS18B20 + MPU6050
+//  Health Score, Horimetro, Alarme 3 niveis, Serial 500ms
+//
+//  SERIE v0.1.1.x - Calibracao MPU6050                     [CLOSED]
+//  -----------------------------------------------------------------
+//  [v0.1.1.0]   - 2026-06-25                                [RELEASED]
+//  Calibracao de ponto zero + double gravity fix
+//  [v0.1.1.1]   - 2026-06-25                                [RELEASED]
+//  Confirmacao interativa de entrada na calibracao
+//  [v0.1.1.2]   - 2026-06-25                                [RELEASED]
+//  Confirmacao de saida + menu pos-calibracao + timeouts
+//
+//  SERIE v0.1.2.x - Ajuste de Sensibilidade                [CLOSED]
+//  -----------------------------------------------------------------
+//  [v0.1.2.0]   - 2026-06-25                                [RELEASED]
+//  Menu sensibilidade - escala + limiares
+//  [v0.1.2.1]   - 2026-06-26                                [RELEASED]
+//  Boot automatico sem confirmacao (logica)
+//  [v0.1.2.2]   - 2026-06-26                                [RELEASED]
+//  Firmware sincronizado - boot automatico aplicado
+//
+//  SERIE v0.1.3.x - Persistencia NVS
+//  -----------------------------------------------------------------
+//  [v0.1.3.0]   - 2026-06-26                                [RELEASED]
+//  Persistencia de offsets na NVS (sigma_cal)
+//  salvarOffsetNVS() / carregarOffsetNVS() / apagarOffsetNVS()
+//  Comando N: apagar NVS e recalibrar do zero
+//
+//  [v0.1.3.1]   - 2026-06-26                                [RELEASED]
+//  Persistencia do horimetro na NVS (sigma_sys)
+//  salvarHorimetroNVS() / carregarHorimetroNVS() / zerarHorimetroNVS()
+//  Salvamento automatico a cada 5 minutos
+//  Comando H: zerar horimetro apos manutencao (com confirmacao S/N)
+//
+//  [v0.1.3.2]   - 2026-06-26                                [CURRENT]
+//  Persistencia de configuracao na NVS (sigma_cfg)
+//  salvarConfigNVS() / carregarConfigNVS() / resetarConfigNVS()
+//  Salva escalaAtualG, VIB_AVISO, VIB_CRITICA automaticamente
+//  Carrega e aplica configuracao no boot antes do MPU6050
+//  Comando R: reset configuracao para padroes de fabrica
+//
+//  PROXIMAS SERIES
+//  -----------------------------------------------------------------
+//  [v0.1.4.x]   Estabilidade - watchdog, baseline de vibracao      [PLANNED]
+//
 // =============================================================================
 
 // -------------------------
@@ -18,7 +81,7 @@
 #include <DallasTemperature.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
-#include <Preferences.h>            // NVS — persistencia em flash interna
+#include <Preferences.h>            // NVS - persistencia em flash interna
 
 // -------------------------
 //  Definicao de pinos
@@ -36,11 +99,16 @@
 #define INTERVALO_SAVE_HORIMETRO_MS 300000UL  // Salva horimetro na NVS a cada 5 min
 #define TEMP_AVISO_MIN              25.0      // Temperatura minima normal (oC)
 #define TEMP_AVISO_MAX              55.0      // Temperatura maxima antes de aviso (oC)
-#define TEMP_CRITICA                65.0      // Temperatura critica — alarme maximo (oC)
+#define TEMP_CRITICA                65.0      // Temperatura critica - alarme maximo (oC)
+
+// Padroes de fabrica para configuracao de vibracao
+#define VIB_AVISO_PADRAO    2.0   // Limiar de aviso padrao em g
+#define VIB_CRITICA_PADRAO  4.0   // Limiar critico padrao em g
+#define ESCALA_PADRAO       8     // Escala padrao do acelerometro em g
 
 // VIB_AVISO e VIB_CRITICA sao variaveis globais para permitir ajuste em runtime
-float VIB_AVISO   = 2.0;  // Limiar de aviso em g — ajustavel via Serial
-float VIB_CRITICA = 4.0;  // Limiar critico em g — ajustavel via Serial
+float VIB_AVISO   = VIB_AVISO_PADRAO;    // Limiar de aviso em g - ajustavel via Serial
+float VIB_CRITICA = VIB_CRITICA_PADRAO;  // Limiar critico em g - ajustavel via Serial
 
 // -------------------------
 //  Forward declarations
@@ -58,6 +126,9 @@ void   apagarOffsetNVS();
 void   salvarHorimetroNVS();
 float  carregarHorimetroNVS();
 void   zerarHorimetroNVS();
+void   salvarConfigNVS();
+bool   carregarConfigNVS();
+void   resetarConfigNVS();
 float  calcularVibracaoRMS();
 float  calcularHealthScore(float temp, float vib, float horas);
 String classificarAlarme(float temp, float vib);
@@ -71,7 +142,8 @@ OneWire            barramento1Wire(PINO_ONE_WIRE);
 DallasTemperature  sensorTemp(&barramento1Wire);
 Adafruit_MPU6050   mpu;
 Preferences        prefsCalibra;   // Namespace: sigma_cal (offsets de calibracao)
-Preferences        prefsSistema;   // Namespace: sigma_sys (horimetro e config)
+Preferences        prefsSistema;   // Namespace: sigma_sys (horimetro)
+Preferences        prefsConfig;    // Namespace: sigma_cfg (escala + limiares)
 
 // -------------------------
 //  Variaveis de controle
@@ -98,15 +170,15 @@ bool  emCalibracao = false;
 // -------------------------
 //  Configuracao de escala
 // -------------------------
-int escalaAtualG = 8; // Escala ativa: 2 / 4 / 8 / 16 g (padrao: 8g)
+int escalaAtualG = ESCALA_PADRAO; // Escala ativa: 2 / 4 / 8 / 16 g (padrao: 8g)
 
 // =============================================================================
-//  FUNCOES NVS — CALIBRACAO (namespace: sigma_cal)
+//  FUNCOES NVS - CALIBRACAO (namespace: sigma_cal)
 // =============================================================================
 
 // Salva offsetAX, offsetAY, offsetAZ e flag calibrado na NVS
 void salvarOffsetNVS() {
-  prefsCalibra.begin("sigma_cal", false); // false = leitura/escrita
+  prefsCalibra.begin("sigma_cal", false);
   prefsCalibra.putFloat("offsetAX", offsetAX);
   prefsCalibra.putFloat("offsetAY", offsetAY);
   prefsCalibra.putFloat("offsetAZ", offsetAZ);
@@ -117,7 +189,7 @@ void salvarOffsetNVS() {
 
 // Carrega offsets salvos da NVS. Retorna true se calibracao valida encontrada.
 bool carregarOffsetNVS() {
-  prefsCalibra.begin("sigma_cal", true); // true = somente leitura
+  prefsCalibra.begin("sigma_cal", true);
   bool calSalva = prefsCalibra.getBool("calibrado", false);
   if (calSalva) {
     offsetAX  = prefsCalibra.getFloat("offsetAX", 0.0);
@@ -142,11 +214,10 @@ void apagarOffsetNVS() {
 }
 
 // =============================================================================
-//  FUNCOES NVS — HORIMETRO (namespace: sigma_sys)
+//  FUNCOES NVS - HORIMETRO (namespace: sigma_sys)
 // =============================================================================
 
-// Salva horimetro acumulado na NVS
-// Chamada automaticamente a cada INTERVALO_SAVE_HORIMETRO_MS (5 minutos)
+// Salva horimetro acumulado na NVS (chamada automaticamente a cada 5 min)
 void salvarHorimetroNVS() {
   prefsSistema.begin("sigma_sys", false);
   prefsSistema.putFloat("horimetro", horimetro);
@@ -161,16 +232,61 @@ float carregarHorimetroNVS() {
   return h;
 }
 
-// Zera horimetro na NVS e em RAM — chamado pelo comando 'H' apos manutencao
+// Zera horimetro na NVS e em RAM - chamado pelo comando 'H' apos manutencao
 void zerarHorimetroNVS() {
   prefsSistema.begin("sigma_sys", false);
   prefsSistema.putFloat("horimetro", 0.0);
   prefsSistema.end();
-  horasBase  = 0.0;
-  horimetro  = 0.0;
-  inicioSistema = millis(); // Reinicia contagem de tempo
+  horasBase     = 0.0;
+  horimetro     = 0.0;
+  inicioSistema = millis();
   Serial.println(F("  [NVS] Horimetro zerado na flash e em RAM."));
   Serial.println(F("  [NVS] Contagem de horas reiniciada."));
+}
+
+// =============================================================================
+//  FUNCOES NVS - CONFIGURACAO (namespace: sigma_cfg)
+// =============================================================================
+
+// Salva escalaAtualG, VIB_AVISO e VIB_CRITICA na NVS
+// Chamada automaticamente apos qualquer alteracao no menu de sensibilidade
+void salvarConfigNVS() {
+  prefsConfig.begin("sigma_cfg", false);
+  prefsConfig.putInt(  "escalaG",    escalaAtualG);
+  prefsConfig.putFloat("vibAviso",   VIB_AVISO);
+  prefsConfig.putFloat("vibCritica", VIB_CRITICA);
+  prefsConfig.end();
+  Serial.println(F("  [NVS] Configuracao salva na flash (sigma_cfg)."));
+}
+
+// Carrega configuracao salva da NVS.
+// Retorna true se configuracao valida encontrada, false se NVS vazia.
+bool carregarConfigNVS() {
+  prefsConfig.begin("sigma_cfg", true);
+  bool existe = prefsConfig.isKey("escalaG");
+  if (existe) {
+    escalaAtualG = prefsConfig.getInt(  "escalaG",    ESCALA_PADRAO);
+    VIB_AVISO    = prefsConfig.getFloat("vibAviso",   VIB_AVISO_PADRAO);
+    VIB_CRITICA  = prefsConfig.getFloat("vibCritica", VIB_CRITICA_PADRAO);
+  }
+  prefsConfig.end();
+  return existe;
+}
+
+// Reseta configuracao para padroes de fabrica na NVS e em RAM
+// Chamado pelo comando 'R' no Serial Monitor
+void resetarConfigNVS() {
+  escalaAtualG = ESCALA_PADRAO;
+  VIB_AVISO    = VIB_AVISO_PADRAO;
+  VIB_CRITICA  = VIB_CRITICA_PADRAO;
+  prefsConfig.begin("sigma_cfg", false);
+  prefsConfig.clear();
+  prefsConfig.end();
+  salvarConfigNVS();
+  Serial.println(F("  [NVS] Configuracao resetada para padroes de fabrica."));
+  Serial.print(F("  [NVS]   Escala      : +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+  Serial.print(F("  [NVS]   VIB_AVISO   : ")); Serial.print(VIB_AVISO, 2);   Serial.println(F(" g"));
+  Serial.print(F("  [NVS]   VIB_CRITICA : ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
 }
 
 // =============================================================================
@@ -229,10 +345,10 @@ bool executarCalibracao() {
     }
   }
 
-  // Calibracao concluida — aplica e salva offsets
-  offsetAX = somaX / NUM_AMOSTRAS;
-  offsetAY = somaY / NUM_AMOSTRAS;
-  offsetAZ = somaZ / NUM_AMOSTRAS; // Valor bruto — inclui ~1g de gravidade
+  // Calibracao concluida - aplica e salva offsets
+  offsetAX  = somaX / NUM_AMOSTRAS;
+  offsetAY  = somaY / NUM_AMOSTRAS;
+  offsetAZ  = somaZ / NUM_AMOSTRAS; // Valor bruto - inclui ~1g de gravidade
   calibrado = true;
 
   Serial.println(F("  [CAL] Calibracao concluida com sucesso!"));
@@ -264,16 +380,16 @@ void menuCalibracaoSetup() {
   bool offsetsCarregados = carregarOffsetNVS();
 
   if (offsetsCarregados) {
-    // Offsets validos encontrados — pula calibracao
+    // Offsets validos encontrados - pula calibracao
     Serial.println(F("  [NVS] Offsets de calibracao encontrados e carregados!"));
     Serial.print(F("  [NVS]   Offset AX : ")); Serial.print(offsetAX, 5); Serial.println(F(" g"));
     Serial.print(F("  [NVS]   Offset AY : ")); Serial.print(offsetAY, 5); Serial.println(F(" g"));
     Serial.print(F("  [NVS]   Offset AZ : ")); Serial.print(offsetAZ, 5); Serial.println(F(" g"));
-    Serial.println(F("  [NVS] Calibracao automatica PULADA — usando offsets salvos."));
+    Serial.println(F("  [NVS] Calibracao automatica PULADA - usando offsets salvos."));
     Serial.println(F("  [NVS] Envie 'C' para recalibrar ou 'N' para apagar NVS."));
     Serial.println();
   } else {
-    // NVS vazia — executa calibracao automatica
+    // NVS vazia - executa calibracao automatica
     Serial.println(F("  [NVS] Nenhum offset encontrado. Iniciando calibracao automatica..."));
     Serial.println(F("  [SIGMA] Mantenha o sensor PARADO e NIVELADO!"));
     Serial.println(F("  [SIGMA] Envie 'X' a qualquer momento para cancelar."));
@@ -488,6 +604,7 @@ void menuPosCalibracao() {
 // =============================================================================
 //  FUNCAO: menuSensibilidade
 //  Comando 'A'. Ajusta escala (2/4/8/16g) e limiares VIB_AVISO/VIB_CRITICA.
+//  Salva configuracao na NVS apos qualquer alteracao.
 //  Apos mudanca de escala: recalibra automaticamente sem menus.
 // =============================================================================
 void menuSensibilidade() {
@@ -502,10 +619,10 @@ void menuSensibilidade() {
   Serial.print(F(  "  |  VIB_AVISO atual  : ")); Serial.print(VIB_AVISO, 2);   Serial.println(F(" g                             |"));
   Serial.print(F(  "  |  VIB_CRITICA atual: ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g                             |"));
   Serial.println(F("  |----------------------------------------------------|"));
-  Serial.println(F("  |  1 = +/-  2g  Alta sens.  — bancada / laboratorio  |"));
-  Serial.println(F("  |  2 = +/-  4g  Media sens. — motores pequenos       |"));
-  Serial.println(F("  |  3 = +/-  8g  Uso geral   — industrial medio       |"));
-  Serial.println(F("  |  4 = +/- 16g  Baixa sens. — motores pesados        |"));
+  Serial.println(F("  |  1 = +/-  2g  Alta sens.  - bancada / laboratorio  |"));
+  Serial.println(F("  |  2 = +/-  4g  Media sens. - motores pequenos       |"));
+  Serial.println(F("  |  3 = +/-  8g  Uso geral   - industrial medio       |"));
+  Serial.println(F("  |  4 = +/- 16g  Baixa sens. - motores pesados        |"));
   Serial.println(F("  |  M = Ajuste MANUAL dos limiares de alarme          |"));
   Serial.println(F("  |  S = SAIR sem alterar configuracao                 |"));
   Serial.println(F("  +====================================================+"));
@@ -545,14 +662,14 @@ void menuSensibilidade() {
       float sugestaoCritica = 0.0;
       bool  escalaValida    = false;
 
-      if      (opcao == '1') { novaEscalaG = 2;  novaEscalaEnum = MPU6050_RANGE_2_G;  sugestaoAviso = 0.5; sugestaoCritica = 1.0;  escalaValida = true; }
-      else if (opcao == '2') { novaEscalaG = 4;  novaEscalaEnum = MPU6050_RANGE_4_G;  sugestaoAviso = 1.0; sugestaoCritica = 2.0;  escalaValida = true; }
-      else if (opcao == '3') { novaEscalaG = 8;  novaEscalaEnum = MPU6050_RANGE_8_G;  sugestaoAviso = 2.0; sugestaoCritica = 4.0;  escalaValida = true; }
-      else if (opcao == '4') { novaEscalaG = 16; novaEscalaEnum = MPU6050_RANGE_16_G; sugestaoAviso = 4.0; sugestaoCritica = 8.0;  escalaValida = true; }
+      if      (opcao == '1') { novaEscalaG = 2;  novaEscalaEnum = MPU6050_RANGE_2_G;  sugestaoAviso = 0.5; sugestaoCritica = 1.0; escalaValida = true; }
+      else if (opcao == '2') { novaEscalaG = 4;  novaEscalaEnum = MPU6050_RANGE_4_G;  sugestaoAviso = 1.0; sugestaoCritica = 2.0; escalaValida = true; }
+      else if (opcao == '3') { novaEscalaG = 8;  novaEscalaEnum = MPU6050_RANGE_8_G;  sugestaoAviso = 2.0; sugestaoCritica = 4.0; escalaValida = true; }
+      else if (opcao == '4') { novaEscalaG = 16; novaEscalaEnum = MPU6050_RANGE_16_G; sugestaoAviso = 4.0; sugestaoCritica = 8.0; escalaValida = true; }
 
       if (escalaValida) {
         Serial.print(F("  [SENS] Nova escala: +/- ")); Serial.print(novaEscalaG); Serial.println(F(" g"));
-        Serial.print(F("  [SENS] Limiares sugeridos — Aviso: ")); Serial.print(sugestaoAviso, 2);
+        Serial.print(F("  [SENS] Limiares sugeridos - Aviso: ")); Serial.print(sugestaoAviso, 2);
         Serial.print(F(" g  |  Critico: ")); Serial.print(sugestaoCritica, 2); Serial.println(F(" g"));
         Serial.println(F("  S = Aplicar sugestao  |  M = Manual  |  N = Manter atuais"));
 
@@ -592,9 +709,15 @@ void menuSensibilidade() {
           Serial.println(F("  [TIMEOUT] Limiares sugeridos aplicados automaticamente."));
         }
 
+        // Aplica nova escala no hardware
         mpu.setAccelerometerRange(novaEscalaEnum);
         escalaAtualG = novaEscalaG;
         Serial.print(F("  [SENS] Escala aplicada: +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+
+        // Salva nova configuracao na NVS
+        salvarConfigNVS();
+
+        // Recalibra automaticamente - offsets da escala anterior sao invalidos
         Serial.println(F("  [SENS] Mudanca de escala invalida offsets. Recalibrando..."));
         Serial.println(F("  [SENS] Mantenha o sensor PARADO e NIVELADO!"));
         delay(2000);
@@ -603,6 +726,7 @@ void menuSensibilidade() {
         menuAtivo = false;
 
       } else if (opcao == 'M' || opcao == 'm') {
+        // Ajuste manual sem mudar escala
         Serial.println(F("  [SENS] Ajuste manual (escala mantida)."));
         Serial.print(F("  [SENS] VIB_AVISO atual: ")); Serial.print(VIB_AVISO, 2); Serial.println(F(" g"));
         Serial.println(F("  [SENS] Digite o novo VIB_AVISO e pressione Enter:"));
@@ -615,8 +739,14 @@ void menuSensibilidade() {
         String sC = ""; t = millis();
         while ((millis()-t) < 30000) { if (Serial.available()) { char c = Serial.read(); if (c=='\n'||c=='\r') break; sC+=c; } }
         float nA = sA.toFloat(), nC = sC.toFloat();
-        if (nA > 0.0 && nC > 0.0 && nA < nC) { VIB_AVISO = nA; VIB_CRITICA = nC; Serial.println(F("  [SENS] Limiares aplicados.")); }
-        else { Serial.println(F("  [SENS] ERRO: valores invalidos.")); }
+        if (nA > 0.0 && nC > 0.0 && nA < nC) {
+          VIB_AVISO = nA; VIB_CRITICA = nC;
+          Serial.println(F("  [SENS] Limiares aplicados."));
+          // Salva nova configuracao na NVS
+          salvarConfigNVS();
+        } else {
+          Serial.println(F("  [SENS] ERRO: valores invalidos. Limiares nao alterados."));
+        }
         menuAtivo = false;
 
       } else {
@@ -655,7 +785,7 @@ float calcularVibracaoRMS() {
     mpu.getEvent(&accel, &gyro, &temp);
     float ax = (accel.acceleration.x / 9.81) - offsetAX;
     float ay = (accel.acceleration.y / 9.81) - offsetAY;
-    float az = (accel.acceleration.z / 9.81) - offsetAZ;
+    float az = (accel.acceleration.z / 9.81) - offsetAZ; // Remove ~1g via offset bruto
     somaQ += (ax * ax) + (ay * ay) + (az * az);
     delay(2);
   }
@@ -686,7 +816,7 @@ float calcularHealthScore(float temp, float vib, float horas) {
 }
 
 // =============================================================================
-//  FUNCAO: classificarAlarme — CRITICO > AVISO > NORMAL
+//  FUNCAO: classificarAlarme - CRITICO > AVISO > NORMAL
 // =============================================================================
 String classificarAlarme(float temp, float vib) {
   if (temp >= TEMP_CRITICA || vib >= VIB_CRITICA) return "*** CRITICO ***";
@@ -716,11 +846,14 @@ void imprimirRelatorio() {
   Serial.println(F("------------------------------------------------"));
   Serial.print(F("  Temperatura     : ")); Serial.print(temperatura, 1); Serial.println(F(" oC"));
   Serial.print(F("  Vibracao        : ")); Serial.print(vibracaoRMS, 3); Serial.println(F(" g"));
-  Serial.print(F("  Horimetro       : ")); Serial.print(horimetro, 4); Serial.print(F(" h"));
-  Serial.print(F("  (NVS: ")); Serial.print(horasBase, 1); Serial.println(F(" h salvas)"));
+  Serial.print(F("  Horimetro       : ")); Serial.print(horimetro, 4);
+  Serial.print(F(" h  (base NVS: ")); Serial.print(horasBase, 1); Serial.println(F(" h)"));
   Serial.print(F("  Prox. Manut.    : ")); Serial.print(horasRestantes, 1); Serial.println(F(" h restantes"));
-  Serial.print(F("  Health Score    : ")); Serial.print(healthScore, 1); Serial.print(F(" %  (")); Serial.print(obterClassificacaoHealth(healthScore)); Serial.println(F(")"));
-  Serial.print(F("  Escala Acel.    : +/- ")); Serial.print(escalaAtualG); Serial.print(F(" g  |  Aviso: ")); Serial.print(VIB_AVISO, 2); Serial.print(F(" g  |  Critico: ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
+  Serial.print(F("  Health Score    : ")); Serial.print(healthScore, 1);
+  Serial.print(F(" %  (")); Serial.print(obterClassificacaoHealth(healthScore)); Serial.println(F(")"));
+  Serial.print(F("  Escala Acel.    : +/- ")); Serial.print(escalaAtualG);
+  Serial.print(F(" g  |  Aviso: ")); Serial.print(VIB_AVISO, 2);
+  Serial.print(F(" g  |  Critico: ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
   Serial.print(F("  Offsets NVS     : ")); Serial.println(calibrado ? F("Salvos (calibracao ativa)") : F("Zerados (sem calibracao)"));
   Serial.print(F("  Alarme          : ")); Serial.println(statusAlarme);
   Serial.println(F("------------------------------------------------"));
@@ -735,7 +868,7 @@ void setup() {
   delay(500);
 
   Serial.println(F("=============================================="));
-  Serial.println(F("  Project SIGMA v0.1.3.1 - Iniciando..."));
+  Serial.println(F("  Project SIGMA v0.1.3.2 - Iniciando..."));
   Serial.println(F("=============================================="));
 
   // I2C
@@ -744,7 +877,30 @@ void setup() {
   delay(150);
   Serial.println(F("  [I2C] Barramento iniciado (400 kHz Fast Mode)."));
 
-  // MPU6050 — ate 5 tentativas
+  // Carrega horimetro da NVS
+  horasBase = carregarHorimetroNVS();
+  if (horasBase > 0.0) {
+    Serial.print(F("  [NVS] Horimetro carregado: "));
+    Serial.print(horasBase, 4); Serial.println(F(" h"));
+  } else {
+    Serial.println(F("  [NVS] Horimetro: nenhum valor salvo. Iniciando do zero."));
+  }
+
+  // Carrega configuracao da NVS (escala + limiares)
+  bool configCarregada = carregarConfigNVS();
+  if (configCarregada) {
+    Serial.println(F("  [NVS] Configuracao carregada da flash (sigma_cfg)."));
+    Serial.print(F("  [NVS]   Escala      : +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+    Serial.print(F("  [NVS]   VIB_AVISO   : ")); Serial.print(VIB_AVISO, 2);   Serial.println(F(" g"));
+    Serial.print(F("  [NVS]   VIB_CRITICA : ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
+  } else {
+    Serial.println(F("  [NVS] Configuracao: nenhuma salva. Usando padroes de fabrica."));
+    Serial.print(F("  [NVS]   Escala      : +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+    Serial.print(F("  [NVS]   VIB_AVISO   : ")); Serial.print(VIB_AVISO, 2);   Serial.println(F(" g"));
+    Serial.print(F("  [NVS]   VIB_CRITICA : ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
+  }
+
+  // MPU6050 - ate 5 tentativas
   bool mpuOk = false;
   for (int t = 1; t <= 5; t++) {
     Serial.print(F("  [I2C] Tentativa ")); Serial.print(t); Serial.print(F(" de 5 - MPU6050 (0x68)..."));
@@ -765,24 +921,21 @@ void setup() {
   }
 
   Serial.println(F("  [OK]  MPU6050 inicializado."));
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  Serial.println(F("  [MPU] Escala: +/- 8g"));
+
+  // Aplica escala carregada da NVS (ou padrao 8g)
+  mpu6050_accel_range_t escalaEnum = MPU6050_RANGE_8_G;
+  if      (escalaAtualG == 2)  escalaEnum = MPU6050_RANGE_2_G;
+  else if (escalaAtualG == 4)  escalaEnum = MPU6050_RANGE_4_G;
+  else if (escalaAtualG == 16) escalaEnum = MPU6050_RANGE_16_G;
+  mpu.setAccelerometerRange(escalaEnum);
+  Serial.print(F("  [MPU] Escala aplicada: +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   Serial.println(F("  [MPU] Giroscopio: +/- 500 deg/s"));
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println(F("  [MPU] Filtro passa-baixa: 21 Hz"));
 
-  // Carrega horimetro da NVS
-  horasBase = carregarHorimetroNVS();
-  if (horasBase > 0.0) {
-    Serial.print(F("  [NVS] Horimetro carregado da flash: "));
-    Serial.print(horasBase, 4);
-    Serial.println(F(" h"));
-  } else {
-    Serial.println(F("  [NVS] Nenhum horimetro salvo. Iniciando do zero."));
-  }
-
-  // Calibracao — verifica NVS, pula se offsets existirem
+  // Calibracao - verifica NVS, pula se offsets existirem
   menuCalibracaoSetup();
 
   // DS18B20
@@ -799,8 +952,12 @@ void setup() {
 
   Serial.println(F("=============================================="));
   Serial.println(F("  Sistema pronto. Monitoramento iniciado."));
-  Serial.println(F("  Comandos: C=Recalibrar | A=Sensibilidade"));
-  Serial.println(F("            N=Apagar NVS | H=Zerar Horimetro"));
+  Serial.println(F("  Comandos disponíveis:"));
+  Serial.println(F("    C = Recalibrar MPU6050"));
+  Serial.println(F("    A = Menu de sensibilidade"));
+  Serial.println(F("    N = Apagar NVS de calibracao"));
+  Serial.println(F("    H = Zerar horimetro"));
+  Serial.println(F("    R = Reset configuracao (padroes de fabrica)"));
   Serial.println(F("=============================================="));
   Serial.println();
 }
@@ -816,19 +973,33 @@ void loop() {
     char cmd = Serial.read();
 
     if (cmd == 'C' || cmd == 'c') {
+      // Recalibrar ponto zero com confirmacao S/N
       menuCalibracaoLoop();
     }
     else if (cmd == 'A' || cmd == 'a') {
+      // Menu de sensibilidade - ajuste de escala e limiares
       Serial.println(F("  [CMD] Menu de sensibilidade ativado!"));
       menuSensibilidade();
     }
     else if (cmd == 'N' || cmd == 'n') {
+      // Apaga NVS de calibracao e recalibra do zero
       Serial.println(F("  [CMD] Apagando NVS de calibracao e recalibrando..."));
       apagarOffsetNVS();
       menuCalibracaoLoop();
     }
     else if (cmd == 'H' || cmd == 'h') {
+      // Zera horimetro apos manutencao preventiva
       zerarHorimetroNVS();
+    }
+    else if (cmd == 'R' || cmd == 'r') {
+      // Reset configuracao para padroes de fabrica
+      Serial.println(F("  [CMD] Resetando configuracao para padroes de fabrica..."));
+      resetarConfigNVS();
+      // Aplica escala padrao no hardware
+      mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+      Serial.println(F("  [CMD] Escala 8g aplicada no MPU6050."));
+      Serial.println(F("  [CMD] Configuracao resetada. Monitoramento continua."));
+      Serial.println();
     }
   }
 
@@ -838,7 +1009,7 @@ void loop() {
     salvarHorimetroNVS();
   }
 
-  // Leitura dos sensores
+  // Leitura dos sensores a cada INTERVALO_LEITURA_MS
   if (!emCalibracao && (agora - ultimaLeitura) >= INTERVALO_LEITURA_MS) {
     ultimaLeitura = agora;
 
