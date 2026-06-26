@@ -1,12 +1,12 @@
 // =============================================================================
-//  Project SIGMA - Sistema de Monitoramento Preditivo de Motor Industrial
+//  Project SIGMA - Sistema Inteligente para Gestão e Monitoramento de Ativos
 //  Codinome   : Project SIGMA
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibração)
 //  Protocolo  : Serial 115200 baud
-//  Versao     : 0.1.1.4
+//  Versao     : 0.1.2.0
 // =============================================================================
 
 // -------------------------
@@ -35,8 +35,11 @@
 #define TEMP_AVISO_MIN           25.0   // Temperatura mínima para operação normal (°C)
 #define TEMP_AVISO_MAX           55.0   // Temperatura máxima antes de gerar aviso (°C)
 #define TEMP_CRITICA             65.0   // Temperatura crítica - alarme máximo (°C)
-#define VIB_AVISO                2.0    // Vibração em g para gerar aviso
-#define VIB_CRITICA              4.0    // Vibração em g para estado crítico
+// VIB_AVISO e VIB_CRITICA sao variaveis globais (nao #define)
+// para permitir ajuste em runtime via menu de sensibilidade (comando 'A')
+// Valores padrao para escala +/-8g (uso geral industrial)
+float VIB_AVISO   = 2.0;   // Limiar de aviso em g — ajustavel via Serial
+float VIB_CRITICA = 4.0;   // Limiar critico em g — ajustavel via Serial
 
 // -------------------------
 //  Instâncias dos sensores
@@ -51,7 +54,8 @@ void imprimirRelatorio();
 bool calibrarPontoZero();          // Retorna true = concluída, false = abortada pelo usuário
 bool aguardarConfirmacaoSerial(uint32_t timeoutMs);
 bool confirmarSaidaCalibracao();    // Prompt de confirmação quando usuário pede para sair
-void menuPosCalibracao();           // Menu pós-calibração: Sair (S) ou Recalibrar (R)
+void menuPosCalibracao();           // Menu pos-calibracao: Sair (S) ou Recalibrar (R)
+void menuSensibilidade();           // Menu de ajuste de sensibilidade e escala (tecla 'A')
 
 OneWire         barramento1Wire(PINO_ONE_WIRE); // Barramento 1-Wire no pino definido
 DallasTemperature sensorTemp(&barramento1Wire); // Sensor DS18B20 no barramento
@@ -77,7 +81,15 @@ float offsetAX = 0.0;  // Offset do eixo X do acelerômetro (em g)
 float offsetAY = 0.0;  // Offset do eixo Y do acelerômetro (em g)
 float offsetAZ = 0.0;  // Offset do eixo Z — após remover 1g da gravidade
 bool  calibrado = false; // Flag: indica se a calibração já foi realizada
-bool  emCalibracao = false; // Flag: bloqueia o loop de monitoramento durante calibração
+bool  emCalibracao = false; // Flag: bloqueia o loop de monitoramento durante calibracao
+
+// -------------------------
+//  Configuracao de escala do acelerometro
+//  Armazena a escala ativa para exibicao no relatorio e para recalibracao automatica.
+//  Valores validos: 2, 4, 8, 16 (em g)
+//  Valor padrao: 8g (adequado para motores industriais de medio porte)
+// -------------------------
+int escalaAtualG = 8; // Escala ativa do acelerometro em g (2 / 4 / 8 / 16)
 
 // =============================================================================
 //  FUNÇÃO: aguardarConfirmacaoSerial
@@ -471,7 +483,345 @@ bool calibrarPontoZero() {
 }
 
 // =============================================================================
-//  FUNÇÃO: calcularVibracaoRMS
+//  FUNCAO: menuSensibilidade
+//
+//  Menu interativo de ajuste de sensibilidade do acelerometro MPU6050.
+//  Acessado via comando 'A' no Serial Monitor durante o monitoramento.
+//
+//  Permite:
+//    1. Selecionar a escala do acelerometro (2g / 4g / 8g / 16g)
+//    2. Ajustar manualmente os limiares VIB_AVISO e VIB_CRITICA
+//    3. Aceitar sugestao automatica de limiares para a escala escolhida
+//    4. Recalibrar automaticamente o ponto zero apos mudanca de escala
+//
+//  Guia de escala x aplicacao:
+//    +/- 2g  → Alta sensibilidade — motores pequenos, bancada de teste
+//    +/- 4g  → Sensibilidade media — motores de pequeno porte
+//    +/- 8g  → Uso geral industrial — motores de medio porte    [PADRAO]
+//    +/-16g  → Baixa sensibilidade — motores pesados, compressores
+// =============================================================================
+void menuSensibilidade() {
+  // Pausa o loop de monitoramento durante o menu
+  emCalibracao = true;
+
+  // Limpa buffer serial antes de exibir o menu
+  while (Serial.available()) Serial.read();
+
+  // ------------------------------------------------------------------
+  //  Exibe estado atual e menu de selecao de escala
+  // ------------------------------------------------------------------
+  Serial.println(F(""));
+  Serial.println(F("  +====================================================+"));
+  Serial.println(F("  |       MENU DE SENSIBILIDADE DO ACELEROMETRO        |"));
+  Serial.println(F("  +====================================================+"));
+  Serial.print(F(  "  |  Escala atual    : +/- "));
+  Serial.print(escalaAtualG);
+  Serial.println(F(" g                          |"));
+  Serial.print(F(  "  |  VIB_AVISO atual : "));
+  Serial.print(VIB_AVISO, 2);
+  Serial.println(F(" g                              |"));
+  Serial.print(F(  "  |  VIB_CRITICA atual: "));
+  Serial.print(VIB_CRITICA, 2);
+  Serial.println(F(" g                              |"));
+  Serial.println(F("  |----------------------------------------------------|" ));
+  Serial.println(F("  |  Selecione a escala do acelerometro:               |"));
+  Serial.println(F("  |                                                    |"));
+  Serial.println(F("  |  [1]  +/-  2g  Alta sens.  — bancada / lab         |"));
+  Serial.println(F("  |  [2]  +/-  4g  Media sens. — motores pequenos      |"));
+  Serial.println(F("  |  [3]  +/-  8g  Uso geral   — industrial medio      |"));
+  Serial.println(F("  |  [4]  +/- 16g  Baixa sens. — motores pesados       |"));
+  Serial.println(F("  |                                                    |"));
+  Serial.println(F("  |  [M]  Ajuste MANUAL dos limiares de alarme         |"));
+  Serial.println(F("  |  [S]  SAIR sem alterar configuracao                |"));
+  Serial.println(F("  +====================================================+"));
+
+  // Aguarda selecao do usuario com timeout de 60 segundos
+  const uint32_t TIMEOUT_MENU_MS = 60000;
+  uint32_t inicioMenu        = millis();
+  uint32_t segundosRestantes = TIMEOUT_MENU_MS / 1000;
+  uint32_t ultimoSegundo     = millis();
+  bool     menuAtivo         = true;
+
+  Serial.print(F("  Aguardando selecao... tempo restante: "));
+  Serial.print(segundosRestantes);
+  Serial.print(F(" s   \r"));
+
+  while (menuAtivo && (millis() - inicioMenu) < TIMEOUT_MENU_MS) {
+
+    // Atualiza contador regressivo a cada segundo
+    if ((millis() - ultimoSegundo) >= 1000) {
+      ultimoSegundo = millis();
+      segundosRestantes--;
+      Serial.print(F("  Aguardando selecao... tempo restante: "));
+      Serial.print(segundosRestantes);
+      Serial.print(F(" s   \r"));
+    }
+
+    if (Serial.available() > 0) {
+      char opcao = Serial.read();
+      Serial.println(F(""));
+
+      // ------------------------------------------------------------------
+      //  [S] Sair sem alterar nada
+      // ------------------------------------------------------------------
+      if (opcao == 'S' || opcao == 's') {
+        Serial.println(F("  [SENS] Configuracao mantida. Saindo do menu..."));
+        menuAtivo = false;
+        break;
+      }
+
+      // ------------------------------------------------------------------
+      //  [1-4] Selecao de escala do acelerometro
+      // ------------------------------------------------------------------
+      mpu6050_accel_range_t novaEscalaEnum;
+      int novaEscalaG       = 0;
+      float sugestaoAviso   = 0.0;
+      float sugestaoCritica = 0.0;
+      bool  escalaValida    = true;
+
+      if (opcao == '1') {
+        novaEscalaG     = 2;
+        novaEscalaEnum  = MPU6050_RANGE_2_G;
+        sugestaoAviso   = 0.5;  // Limiares sugeridos para alta sensibilidade
+        sugestaoCritica = 1.0;
+      } else if (opcao == '2') {
+        novaEscalaG     = 4;
+        novaEscalaEnum  = MPU6050_RANGE_4_G;
+        sugestaoAviso   = 1.0;
+        sugestaoCritica = 2.0;
+      } else if (opcao == '3') {
+        novaEscalaG     = 8;
+        novaEscalaEnum  = MPU6050_RANGE_8_G;
+        sugestaoAviso   = 2.0;  // Limiares padrao do sistema
+        sugestaoCritica = 4.0;
+      } else if (opcao == '4') {
+        novaEscalaG     = 16;
+        novaEscalaEnum  = MPU6050_RANGE_16_G;
+        sugestaoAviso   = 4.0;  // Limiares para motores pesados
+        sugestaoCritica = 8.0;
+      } else if (opcao == 'M' || opcao == 'm') {
+        escalaValida = false; // Nao e selecao de escala — va para ajuste manual
+      } else {
+        // Caractere invalido — ignora e continua aguardando
+        escalaValida = false;
+        Serial.println(F("  [SENS] Opcao invalida. Digite 1, 2, 3, 4, M ou S."));
+        continue;
+      }
+
+      // ------------------------------------------------------------------
+      //  Aplica nova escala se selecionada
+      // ------------------------------------------------------------------
+      if (escalaValida && novaEscalaG > 0) {
+        Serial.print(F("  [SENS] Nova escala selecionada: +/- "));
+        Serial.print(novaEscalaG);
+        Serial.println(F(" g"));
+        Serial.println(F(""));
+        Serial.println(F("  [SENS] Limiares sugeridos para esta escala:"));
+        Serial.print(F(  "  [SENS]   VIB_AVISO   sugerido : "));
+        Serial.print(sugestaoAviso, 2);
+        Serial.println(F(" g"));
+        Serial.print(F(  "  [SENS]   VIB_CRITICA sugerido : "));
+        Serial.print(sugestaoCritica, 2);
+        Serial.println(F(" g"));
+        Serial.println(F(""));
+        Serial.println(F("  Deseja aplicar os limiares sugeridos?"));
+        Serial.println(F("  [S] Aplicar sugestao automatica"));
+        Serial.println(F("  [M] Definir manualmente"));
+        Serial.println(F("  [N] Manter limiares atuais"));
+
+        // Limpa buffer e aguarda resposta sobre os limiares
+        while (Serial.available()) Serial.read();
+        uint32_t inicioLimiar = millis();
+        bool aguardandoLimiar = true;
+
+        while (aguardandoLimiar && (millis() - inicioLimiar) < 30000) {
+          if (Serial.available() > 0) {
+            char resLimiar = Serial.read();
+            Serial.println(F(""));
+
+            if (resLimiar == 'S' || resLimiar == 's') {
+              // Aplica sugestao automatica
+              VIB_AVISO   = sugestaoAviso;
+              VIB_CRITICA = sugestaoCritica;
+              Serial.println(F("  [SENS] Limiares sugeridos aplicados."));
+              aguardandoLimiar = false;
+
+            } else if (resLimiar == 'M' || resLimiar == 'm') {
+              // Ajuste manual dos limiares
+              Serial.println(F("  [SENS] Ajuste manual selecionado."));
+              Serial.print(F(  "  [SENS] VIB_AVISO atual  : "));
+              Serial.print(VIB_AVISO, 2);
+              Serial.println(F(" g"));
+              Serial.println(F("  [SENS] Digite o novo valor de VIB_AVISO (ex: 1.50) e pressione Enter:"));
+
+              // Aguarda o usuario digitar o valor de VIB_AVISO
+              while (Serial.available()) Serial.read();
+              String inputAviso = "";
+              uint32_t inicioDigitacao = millis();
+              while ((millis() - inicioDigitacao) < 30000) {
+                if (Serial.available() > 0) {
+                  char c = Serial.read();
+                  if (c == '\n' || c == '\r') break; // Enter finaliza a entrada
+                  inputAviso += c;
+                }
+              }
+              float novoAviso = inputAviso.toFloat();
+
+              Serial.print(F(  "  [SENS] VIB_CRITICA atual: "));
+              Serial.print(VIB_CRITICA, 2);
+              Serial.println(F(" g"));
+              Serial.println(F("  [SENS] Digite o novo valor de VIB_CRITICA (ex: 3.00) e pressione Enter:"));
+
+              // Aguarda o usuario digitar o valor de VIB_CRITICA
+              while (Serial.available()) Serial.read();
+              String inputCritica = "";
+              inicioDigitacao = millis();
+              while ((millis() - inicioDigitacao) < 30000) {
+                if (Serial.available() > 0) {
+                  char c = Serial.read();
+                  if (c == '\n' || c == '\r') break;
+                  inputCritica += c;
+                }
+              }
+              float novaCritica = inputCritica.toFloat();
+
+              // Valida os valores digitados: aviso < critico e ambos > 0
+              if (novoAviso > 0.0 && novaCritica > 0.0 && novoAviso < novaCritica) {
+                VIB_AVISO   = novoAviso;
+                VIB_CRITICA = novaCritica;
+                Serial.println(F("  [SENS] Limiares manuais aplicados com sucesso."));
+              } else {
+                Serial.println(F("  [SENS] ERRO: valores invalidos. Limiares NAO alterados."));
+                Serial.println(F("  [SENS] Regra: VIB_AVISO > 0 e VIB_CRITICA > VIB_AVISO."));
+              }
+              aguardandoLimiar = false;
+
+            } else if (resLimiar == 'N' || resLimiar == 'n') {
+              // Mantem limiares atuais
+              Serial.println(F("  [SENS] Limiares mantidos sem alteracao."));
+              aguardandoLimiar = false;
+            }
+          }
+          delay(50);
+        }
+        if (aguardandoLimiar) {
+          Serial.println(F("  [TIMEOUT] Sem resposta. Limiares sugeridos aplicados automaticamente."));
+          VIB_AVISO   = sugestaoAviso;
+          VIB_CRITICA = sugestaoCritica;
+        }
+
+        // Aplica a nova escala no hardware MPU6050
+        mpu.setAccelerometerRange(novaEscalaEnum);
+        escalaAtualG = novaEscalaG;
+        Serial.print(F("  [SENS] Escala aplicada no MPU6050: +/- "));
+        Serial.print(escalaAtualG);
+        Serial.println(F(" g"));
+
+        // ------------------------------------------------------------------
+        //  Recalibracao automatica apos mudanca de escala
+        //  IMPORTANTE: offsets calculados em uma escala sao invalidos em outra.
+        //  O sistema recalibra automaticamente para garantir leituras corretas.
+        // ------------------------------------------------------------------
+        Serial.println(F(""));
+        Serial.println(F("  [SENS] ATENCAO: Mudanca de escala invalida os offsets anteriores."));
+        Serial.println(F("  [SENS] Recalibracao automatica sera iniciada agora."));
+        Serial.println(F("  [SENS] Mantenha o sensor PARADO e NIVELADO!"));
+        delay(2000); // Pausa para o usuario posicionar o sensor
+
+        calibrado = false;  // Invalida calibracao anterior
+        offsetAX  = 0.0;    // Zera offsets — evita leituras incorretas
+        offsetAY  = 0.0;
+        offsetAZ  = 0.0;
+
+        // Executa calibracao automatica (sem prompt de confirmacao — usuario ja
+        // demonstrou intencao ao selecionar nova escala)
+        calibrarPontoZero();
+        // menuPosCalibracao() e chamado dentro de calibrarPontoZero()
+        // emCalibracao sera liberado la dentro
+        menuAtivo = false; // Sai do menu principal apos calibracao
+        return;
+      }
+
+      // ------------------------------------------------------------------
+      //  [M] Ajuste manual direto dos limiares (sem mudar escala)
+      // ------------------------------------------------------------------
+      if (opcao == 'M' || opcao == 'm') {
+        Serial.println(F("  [SENS] Ajuste manual de limiares (escala mantida)."));
+        Serial.print(F(  "  [SENS] VIB_AVISO atual  : "));
+        Serial.print(VIB_AVISO, 2);
+        Serial.println(F(" g"));
+        Serial.println(F("  [SENS] Digite o novo valor de VIB_AVISO e pressione Enter:"));
+
+        while (Serial.available()) Serial.read();
+        String inputAviso = "";
+        uint32_t inicioDigitacao = millis();
+        while ((millis() - inicioDigitacao) < 30000) {
+          if (Serial.available() > 0) {
+            char c = Serial.read();
+            if (c == '\n' || c == '\r') break;
+            inputAviso += c;
+          }
+        }
+        float novoAviso = inputAviso.toFloat();
+
+        Serial.print(F(  "  [SENS] VIB_CRITICA atual: "));
+        Serial.print(VIB_CRITICA, 2);
+        Serial.println(F(" g"));
+        Serial.println(F("  [SENS] Digite o novo valor de VIB_CRITICA e pressione Enter:"));
+
+        while (Serial.available()) Serial.read();
+        String inputCritica = "";
+        inicioDigitacao = millis();
+        while ((millis() - inicioDigitacao) < 30000) {
+          if (Serial.available() > 0) {
+            char c = Serial.read();
+            if (c == '\n' || c == '\r') break;
+            inputCritica += c;
+          }
+        }
+        float novaCritica = inputCritica.toFloat();
+
+        if (novoAviso > 0.0 && novaCritica > 0.0 && novoAviso < novaCritica) {
+          VIB_AVISO   = novoAviso;
+          VIB_CRITICA = novaCritica;
+          Serial.println(F("  [SENS] Limiares manuais aplicados com sucesso."));
+        } else {
+          Serial.println(F("  [SENS] ERRO: valores invalidos. Limiares NAO alterados."));
+          Serial.println(F("  [SENS] Regra: VIB_AVISO > 0 e VIB_CRITICA > VIB_AVISO."));
+        }
+        menuAtivo = false;
+      }
+    }
+    delay(50);
+  }
+
+  // Timeout atingido — sai do menu sem alterar nada
+  if (menuAtivo) {
+    Serial.println(F(""));
+    Serial.println(F("  [TIMEOUT] Sem selecao em 60s. Menu encerrado sem alteracoes."));
+  }
+
+  // Exibe resumo final das configuracoes ativas
+  Serial.println(F(""));
+  Serial.println(F("  [SENS] -------- Configuracao Ativa --------"));
+  Serial.print(F(  "  [SENS]   Escala      : +/- "));
+  Serial.print(escalaAtualG);
+  Serial.println(F(" g"));
+  Serial.print(F(  "  [SENS]   VIB_AVISO   : "));
+  Serial.print(VIB_AVISO, 2);
+  Serial.println(F(" g"));
+  Serial.print(F(  "  [SENS]   VIB_CRITICA : "));
+  Serial.print(VIB_CRITICA, 2);
+  Serial.println(F(" g"));
+  Serial.println(F("  [SENS] -------------------------------------------"));
+  Serial.println(F("  [SENS] Monitoramento retomado."));
+  Serial.println();
+
+  emCalibracao = false; // Libera o loop de monitoramento
+}
+
+// =============================================================================
+//  FUNCAO: calcularVibracaoRMS
 //  Lê 50 amostras do acelerômetro MPU6050 e calcula a magnitude RMS resultante.
 //  Aplica os offsets de calibração em cada eixo antes do cálculo.
 //  O offsetAZ já contém ~1g (gravidade), portanto ao subtrair o offset
@@ -638,6 +988,15 @@ void imprimirRelatorio() {
   Serial.print(obterClassificacaoHealth(healthScore));
   Serial.println(F(")"));
 
+  // --- Configuracao de sensibilidade ---
+  Serial.print(F("  Escala Acel.    : +/- "));
+  Serial.print(escalaAtualG);
+  Serial.print(F(" g  |  Aviso: "));
+  Serial.print(VIB_AVISO, 2);
+  Serial.print(F(" g  |  Critico: "));
+  Serial.print(VIB_CRITICA, 2);
+  Serial.println(F(" g"));
+
   // --- Alarme ---
   Serial.print(F("  Alarme          : "));
   Serial.println(statusAlarme);
@@ -655,7 +1014,7 @@ void setup() {
   delay(500); // Aguarda estabilização da porta serial
 
   Serial.println(F("=============================================="));
-  Serial.println(F("  Project SIGMA v0.1.1.4 - Iniciando Sistema..."));
+  Serial.println(F("  Project SIGMA v0.1.2.0 - Iniciando Sistema...")); 
   Serial.println(F("=============================================="));
 
   // ------------------------------------------
@@ -770,7 +1129,9 @@ void setup() {
 
   Serial.println(F("=============================================="));
   Serial.println(F("  Sistema pronto. Iniciando monitoramento..."));
-  Serial.println(F("  Dica: envie 'C' no Serial para recalibrar MPU"));
+  Serial.println(F("  Comandos Serial:"));
+  Serial.println(F("    C = Recalibrar ponto zero do MPU6050"));
+  Serial.println(F("    A = Menu de ajuste de sensibilidade"));
   Serial.println(F("=============================================="));
   Serial.println();
 }
@@ -790,6 +1151,16 @@ void loop() {
   // ------------------------------------------
   if (!emCalibracao && Serial.available() > 0) {
     char cmd = Serial.read(); // Lê o caractere enviado
+
+    // ------------------------------------------------------------------
+    //  Comando 'A' — abre o menu de ajuste de sensibilidade do acelerometro
+    //  Permite selecionar escala (2g/4g/8g/16g) e ajustar limiares de alarme
+    // ------------------------------------------------------------------
+    if (cmd == 'A' || cmd == 'a') {
+      Serial.println(F(""));
+      Serial.println(F("  [CMD] Menu de sensibilidade ativado!"));
+      menuSensibilidade(); // Abre o menu de ajuste de sensibilidade
+    }
 
     if (cmd == 'C' || cmd == 'c') {
       Serial.println(F(""));
