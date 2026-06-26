@@ -6,12 +6,30 @@
 //  Framework  : Arduino via PlatformIO
 //  Sensores   : DS18B20 (temperatura) + MPU6050 (vibracao)
 //  Protocolo  : Serial 115200 baud
-//  Versao     : 0.1.4.0
+//  Versao     : 0.1.5.0
+// =============================================================================
+//
+//  SERIE v0.1.5.x — Baseline de Vibracao
+//  [v0.1.5.0]   - 2026-06-26                                [CURRENT]
+//  Autor  : Bruno Alex Souza da Silva
+//  Status : Em desenvolvimento
+//  Resumo :
+//    - Coleta de baseline de vibracao em operacao normal (cmd 'B')
+//    - 300 amostras com motor em funcionamento normal
+//    - Calcula media e desvio padrao da vibracao
+//    - Salvo na NVS (sigma_bas): basMedia, basStddev, fatorK, basAtivo, basN
+//    - Alarme relativo: Aviso = media + K*stddev | Critico = media + 2K*stddev
+//    - Health Score usa desvio em sigmas quando baseline ativo
+//    - Fator K ajustavel via cmd 'K' (1.0 a 5.0, padrao 2.0)
+//    - Apagar baseline via cmd 'Z'
+//    - Relatorio exibe baseline + desvio atual + limiar calculado
+//    - Quando baseline inativo: usa VIB_AVISO/VIB_CRITICA absolutos
+//    - Novas funcoes: coletarBaseline(), ajustarFatorK()
+//    - salvarBaselineNVS() / carregarBaselineNVS() / apagarBaselineNVS()
+//    - Namespace NVS: sigma_bas
+//
 // =============================================================================
 
-// -------------------------
-//  Bibliotecas necessarias
-// -------------------------
 #include <Arduino.h>
 #include <Wire.h>
 #include <OneWire.h>
@@ -19,7 +37,8 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Preferences.h>
-#include <esp_task_wdt.h>           // Hardware Watchdog ESP-IDF v5.x
+#include <esp_task_wdt.h>
+#include <math.h>
 
 // -------------------------
 //  Definicao de pinos
@@ -38,8 +57,12 @@
 #define TEMP_AVISO_MIN              25.0
 #define TEMP_AVISO_MAX              55.0
 #define TEMP_CRITICA                65.0
-#define WDT_TIMEOUT_MS              10000   // Timeout do Watchdog em ms (10s)
-#define MAX_FALHAS_DS18B20          5       // Falhas consecutivas antes de reset
+#define WDT_TIMEOUT_MS              10000
+#define MAX_FALHAS_DS18B20          5
+#define NUM_AMOSTRAS_BASELINE       300     // Amostras para coleta do baseline
+#define FATOR_K_PADRAO              2.0     // Multiplicador padrao (2 sigma)
+#define FATOR_K_MIN                 1.0     // Fator K minimo configuravel
+#define FATOR_K_MAX                 5.0     // Fator K maximo configuravel
 
 float VIB_AVISO   = 2.0;
 float VIB_CRITICA = 4.0;
@@ -67,6 +90,11 @@ void   resetarConfigNVS();
 void   confirmarResetConfig();
 void   salvarResetNVS(String motivo);
 void   carregarResetNVS();
+void   salvarBaselineNVS();
+bool   carregarBaselineNVS();
+void   apagarBaselineNVS();
+void   coletarBaseline();
+void   ajustarFatorK();
 float  calcularVibracaoRMS();
 float  calcularHealthScore(float temp, float vib, float horas);
 String classificarAlarme(float temp, float vib);
@@ -82,6 +110,7 @@ Adafruit_MPU6050   mpu;
 Preferences        prefsCalibra;
 Preferences        prefsSistema;
 Preferences        prefsConfig;
+Preferences        prefsBaseline;
 
 // -------------------------
 //  Variaveis de controle
@@ -113,13 +142,21 @@ int escalaAtualG = 8;
 // -------------------------
 //  Watchdog e reset
 // -------------------------
-int    resetCount  = 0;
-String resetMotivo = "Nenhum";
+int    resetCount    = 0;
+String resetMotivo   = "Nenhum";
 int    falhasDS18B20 = 0;
+
+// -------------------------
+//  Baseline de vibracao
+// -------------------------
+float basMedia  = 0.0;    // Media da vibracao em operacao normal (g)
+float basStddev = 0.0;    // Desvio padrao da vibracao (g)
+float fatorK    = FATOR_K_PADRAO; // Multiplicador de sensibilidade
+bool  basAtivo  = false;  // Flag: baseline valido e carregado
+int   basN      = 0;      // Numero de amostras coletadas
 
 // =============================================================================
 //  FUNCAO: reiniciarSistema
-//  Self-reset limpo: salva NVS, loga motivo, reinicia via esp_restart()
 // =============================================================================
 void reiniciarSistema(String motivo) {
   Serial.println(F(""));
@@ -130,8 +167,7 @@ void reiniciarSistema(String motivo) {
   salvarHorimetroNVS();
   salvarResetNVS(motivo);
   Serial.println(F("  [RESET] NVS salva. Reiniciando em 2 segundos..."));
-  Serial.flush();
-  delay(2000);
+  Serial.flush(); delay(2000);
   esp_restart();
 }
 
@@ -185,7 +221,7 @@ void apagarOffsetNVS() {
   prefsCalibra.end();
   offsetAX = 0.0; offsetAY = 0.0; offsetAZ = 0.0;
   calibrado = false;
-  Serial.println(F("  [NVS] Offsets apagados (sigma_cal). RAM zerada."));
+  Serial.println(F("  [NVS] Offsets apagados (sigma_cal)."));
 }
 
 // =============================================================================
@@ -210,13 +246,10 @@ void zerarHorimetroNVS() {
   prefsSistema.putInt("resetCount", 0);
   prefsSistema.putString("resetMotivo", "Nenhum");
   prefsSistema.end();
-  horasBase     = 0.0;
-  horimetro     = 0.0;
-  resetCount    = 0;
-  resetMotivo   = "Nenhum";
+  horasBase = 0.0; horimetro = 0.0;
+  resetCount = 0; resetMotivo = "Nenhum";
   inicioSistema = millis();
-  Serial.println(F("  [NVS] Horimetro e contador de resets zerados."));
-  Serial.println(F("  [NVS] Contagem de horas reiniciada."));
+  Serial.println(F("  [NVS] Horimetro e resets zerados."));
 }
 
 // =============================================================================
@@ -247,15 +280,232 @@ void resetarConfigNVS() {
   prefsConfig.begin("sigma_cfg", false);
   prefsConfig.clear();
   prefsConfig.end();
-  escalaAtualG = 8;
-  VIB_AVISO    = 2.0;
-  VIB_CRITICA  = 4.0;
+  escalaAtualG = 8; VIB_AVISO = 2.0; VIB_CRITICA = 4.0;
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   salvarConfigNVS();
-  Serial.println(F("  [NVS] Configuracao resetada para padroes de fabrica."));
-  Serial.print(F("  [NVS]   Escala      : +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
-  Serial.print(F("  [NVS]   VIB_AVISO   : ")); Serial.print(VIB_AVISO,   2); Serial.println(F(" g"));
-  Serial.print(F("  [NVS]   VIB_CRITICA : ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
+  Serial.println(F("  [NVS] Config resetada para padroes de fabrica."));
+  Serial.print(F("  [NVS]   Escala: +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+  Serial.print(F("  [NVS]   Aviso : ")); Serial.print(VIB_AVISO,   2); Serial.println(F(" g"));
+  Serial.print(F("  [NVS]   Crit. : ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
+}
+
+// =============================================================================
+//  NVS — BASELINE (sigma_bas)
+// =============================================================================
+void salvarBaselineNVS() {
+  prefsBaseline.begin("sigma_bas", false);
+  prefsBaseline.putFloat("basMedia",  basMedia);
+  prefsBaseline.putFloat("basStddev", basStddev);
+  prefsBaseline.putFloat("fatorK",    fatorK);
+  prefsBaseline.putBool("basAtivo",   basAtivo);
+  prefsBaseline.putInt("basN",        basN);
+  prefsBaseline.end();
+  Serial.println(F("  [NVS] Baseline salvo (sigma_bas)."));
+}
+
+bool carregarBaselineNVS() {
+  prefsBaseline.begin("sigma_bas", true);
+  bool ativo = prefsBaseline.getBool("basAtivo", false);
+  if (ativo) {
+    basMedia  = prefsBaseline.getFloat("basMedia",  0.0);
+    basStddev = prefsBaseline.getFloat("basStddev", 0.0);
+    fatorK    = prefsBaseline.getFloat("fatorK",    FATOR_K_PADRAO);
+    basN      = prefsBaseline.getInt("basN",        0);
+    basAtivo  = true;
+  }
+  prefsBaseline.end();
+  return ativo;
+}
+
+void apagarBaselineNVS() {
+  prefsBaseline.begin("sigma_bas", false);
+  prefsBaseline.clear();
+  prefsBaseline.end();
+  basMedia = 0.0; basStddev = 0.0;
+  fatorK   = FATOR_K_PADRAO;
+  basAtivo = false; basN = 0;
+  Serial.println(F("  [BAS] Baseline apagado da NVS e RAM zerada."));
+  Serial.println(F("  [BAS] Sistema voltara a usar limiares absolutos."));
+}
+
+// =============================================================================
+//  FUNCAO: coletarBaseline
+//  Coleta NUM_AMOSTRAS_BASELINE leituras com motor em operacao normal.
+//  Calcula media e desvio padrao. Salva na NVS (sigma_bas).
+//  Chamada pelo comando 'B' no Serial Monitor.
+// =============================================================================
+void coletarBaseline() {
+  emCalibracao = true;
+  while (Serial.available()) Serial.read();
+
+  Serial.println(F(""));
+  Serial.println(F("  +====================================================+"));
+  Serial.println(F("  |         COLETA DE BASELINE DE VIBRACAO             |"));
+  Serial.println(F("  +====================================================+"));
+  Serial.println(F("  |  IMPORTANTE:                                       |"));
+  Serial.println(F("  |  O motor deve estar em OPERACAO NORMAL!            |"));
+  Serial.println(F("  |  Nao em repouso — o baseline aprende o             |"));
+  Serial.println(F("  |  padrao normal de vibração em funcionamento.       |"));
+  Serial.println(F("  |                                                    |"));
+  Serial.println(F("  |  S = INICIAR coleta de baseline                    |"));
+  Serial.println(F("  |  N = CANCELAR                                      |"));
+  Serial.println(F("  +====================================================+"));
+
+  // Confirmacao de entrada
+  uint32_t ini = millis(); uint32_t segs = 30; uint32_t ultSeg = millis();
+  bool confirmado = false;
+  Serial.print(F("  Aguardando... tempo restante: 30 s\r"));
+
+  while ((millis() - ini) < 30000) {
+    esp_task_wdt_reset();
+    if ((millis() - ultSeg) >= 1000) { ultSeg = millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
+    if (Serial.available() > 0) {
+      char r = Serial.read(); Serial.println(F(""));
+      if (r == 'S' || r == 's') { confirmado = true; break; }
+      if (r == 'N' || r == 'n') { break; }
+    }
+    delay(50);
+  }
+
+  if (!confirmado) {
+    Serial.println(F("  [BAS] Coleta CANCELADA. Baseline nao alterado."));
+    Serial.println(); emCalibracao = false; return;
+  }
+
+  // Coleta das amostras
+  Serial.println(F("  [BAS] Iniciando coleta..."));
+  Serial.println(F("  [BAS] Mantenha o motor em operacao normal!"));
+  Serial.println(F("  [BAS] Envie 'X' para cancelar."));
+  delay(2000); // Pausa para estabilizacao
+
+  float soma   = 0.0;
+  float somaQ  = 0.0; // Para calculo do desvio padrao (soma dos quadrados)
+  int   colet  = 0;
+  bool  abortado = false;
+
+  for (int i = 0; i < NUM_AMOSTRAS_BASELINE; i++) {
+    esp_task_wdt_reset();
+
+    // Le vibracao instantanea (media de 10 amostras rapidas)
+    float somaRapida = 0.0;
+    sensors_event_t accel, gyro, temp;
+    for (int j = 0; j < 10; j++) {
+      mpu.getEvent(&accel, &gyro, &temp);
+      float ax = (accel.acceleration.x / 9.81) - offsetAX;
+      float ay = (accel.acceleration.y / 9.81) - offsetAY;
+      float az = (accel.acceleration.z / 9.81) - offsetAZ;
+      somaRapida += sqrt((ax*ax) + (ay*ay) + (az*az));
+      delay(2);
+    }
+    float leitura = somaRapida / 10.0;
+
+    soma  += leitura;
+    somaQ += leitura * leitura;
+    colet++;
+
+    if ((i + 1) % 50 == 0) {
+      Serial.print(F("  [BAS] ")); Serial.print(i + 1);
+      Serial.print(F(" / ")); Serial.print(NUM_AMOSTRAS_BASELINE);
+      Serial.print(F(" amostras  |  Media parcial: "));
+      Serial.print(soma / colet, 4); Serial.println(F(" g"));
+    }
+
+    // Verifica cancelamento
+    if (Serial.available() > 0) {
+      char t = Serial.read();
+      if (t == 'X' || t == 'x') {
+        Serial.println(F("  [BAS] Coleta CANCELADA pelo usuario."));
+        Serial.println(F("  [BAS] Baseline nao alterado."));
+        abortado = true; break;
+      }
+    }
+    delay(10);
+  }
+
+  if (abortado) { emCalibracao = false; return; }
+
+  // Calcula media e desvio padrao
+  // Desvio padrao: sqrt( (somaQ/N) - (soma/N)^2 )
+  basMedia  = soma / colet;
+  basStddev = sqrt((somaQ / colet) - (basMedia * basMedia));
+  if (basStddev < 0.001) basStddev = 0.001; // Evita divisao por zero
+  basAtivo  = true;
+  basN      = colet;
+
+  // Exibe resultado
+  Serial.println(F("  [BAS] ======= Baseline Calculado ======="));
+  Serial.print(F("  [BAS]   Amostras   : ")); Serial.println(basN);
+  Serial.print(F("  [BAS]   Media      : ")); Serial.print(basMedia,  5); Serial.println(F(" g"));
+  Serial.print(F("  [BAS]   Std Dev    : ")); Serial.print(basStddev, 5); Serial.println(F(" g"));
+  Serial.print(F("  [BAS]   Fator K    : ")); Serial.println(fatorK, 1);
+  Serial.print(F("  [BAS]   Lim.Aviso  : ")); Serial.print(basMedia + fatorK * basStddev, 5); Serial.println(F(" g"));
+  Serial.print(F("  [BAS]   Lim.Crit.  : ")); Serial.print(basMedia + 2.0 * fatorK * basStddev, 5); Serial.println(F(" g"));
+  Serial.println(F("  [BAS] ====================================="));
+  Serial.println(F("  [BAS] Baseline salvo na NVS."));
+  Serial.println();
+
+  salvarBaselineNVS();
+  emCalibracao = false;
+}
+
+// =============================================================================
+//  FUNCAO: ajustarFatorK
+//  Permite ajustar o fator K de sensibilidade do alarme relativo.
+//  Fator K: numero de desvios padrao acima da media para gerar alarme.
+//  K menor = mais sensivel | K maior = menos sensivel
+//  Range valido: FATOR_K_MIN (1.0) a FATOR_K_MAX (5.0)
+// =============================================================================
+void ajustarFatorK() {
+  while (Serial.available()) Serial.read();
+
+  Serial.println(F(""));
+  Serial.println(F("  +--------------------------------------------------+"));
+  Serial.println(F("  |         AJUSTE DO FATOR K (SENSIBILIDADE)        |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  O Fator K define quantos desvios padrao         |"));
+  Serial.println(F("  |  acima da media disparam o alarme.               |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  K menor = mais sensivel (mais alarmes)          |"));
+  Serial.println(F("  |  K maior = menos sensivel (menos alarmes)        |"));
+  Serial.println(F("  |                                                  |"));
+  Serial.println(F("  |  Range valido: 1.0 a 5.0                        |"));
+  Serial.println(F("  |  Padrao: 2.0 (2 sigma)                          |"));
+  Serial.println(F("  +--------------------------------------------------+"));
+  Serial.print(F("  Fator K atual: ")); Serial.println(fatorK, 1);
+
+  if (basAtivo) {
+    Serial.print(F("  Limiar Aviso  atual: ")); Serial.print(basMedia + fatorK * basStddev, 4); Serial.println(F(" g"));
+    Serial.print(F("  Limiar Critico atual: ")); Serial.print(basMedia + 2.0 * fatorK * basStddev, 4); Serial.println(F(" g"));
+  }
+
+  Serial.println(F("  Digite o novo Fator K e pressione Enter:"));
+  while (Serial.available()) Serial.read();
+
+  String input = ""; uint32_t t = millis();
+  while ((millis() - t) < 30000) {
+    esp_task_wdt_reset();
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n' || c == '\r') break;
+      input += c;
+    }
+  }
+
+  float novoK = input.toFloat();
+  if (novoK >= FATOR_K_MIN && novoK <= FATOR_K_MAX) {
+    fatorK = novoK;
+    if (basAtivo) salvarBaselineNVS(); // Salva novo K na NVS junto com o baseline
+    Serial.print(F("  [BAS] Fator K atualizado para: ")); Serial.println(fatorK, 1);
+    if (basAtivo) {
+      Serial.print(F("  [BAS] Novo Lim.Aviso  : ")); Serial.print(basMedia + fatorK * basStddev, 4); Serial.println(F(" g"));
+      Serial.print(F("  [BAS] Novo Lim.Crit.  : ")); Serial.print(basMedia + 2.0 * fatorK * basStddev, 4); Serial.println(F(" g"));
+    }
+  } else {
+    Serial.print(F("  [BAS] ERRO: valor invalido. Range: "));
+    Serial.print(FATOR_K_MIN, 1); Serial.print(F(" a ")); Serial.print(FATOR_K_MAX, 1);
+    Serial.println(F(". Fator K nao alterado."));
+  }
+  Serial.println();
 }
 
 // =============================================================================
@@ -284,13 +534,13 @@ void confirmarResetConfig() {
     if ((millis() - ultSeg) >= 1000) { ultSeg = millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
     if (Serial.available() > 0) {
       char r = Serial.read(); Serial.println(F(""));
-      if (r == 'S' || r == 's') { confirmou1 = true;  break; }
+      if (r == 'S' || r == 's') { confirmou1 = true; break; }
       if (r == 'N' || r == 'n') { break; }
     }
     delay(50);
   }
 
-  if (!confirmou1) { Serial.println(F("  [RESET] Operacao CANCELADA. Configuracao mantida.")); Serial.println(); return; }
+  if (!confirmou1) { Serial.println(F("  [RESET] Cancelado. Config mantida.")); Serial.println(); return; }
 
   while (Serial.available()) Serial.read();
   Serial.println(F(""));
@@ -300,8 +550,7 @@ void confirmarResetConfig() {
   Serial.println(F("  |  Digite  N      para cancelar                      |"));
   Serial.println(F("  +----------------------------------------------------+"));
 
-  inicio = millis(); segs = 30; ultSeg = millis();
-  String input = "";
+  inicio = millis(); segs = 30; ultSeg = millis(); String input = "";
   Serial.print(F("  Aguardando... tempo restante: 30 s\r"));
 
   while ((millis() - inicio) < 30000) {
@@ -311,14 +560,14 @@ void confirmarResetConfig() {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
         Serial.println(F("")); input.trim();
-        if (input == "RESET") { Serial.println(F("  [RESET] Confirmado! Resetando...")); resetarConfigNVS(); Serial.println(); return; }
-        else { Serial.println(F("  [RESET] Entrada invalida. Operacao CANCELADA.")); Serial.println(); return; }
-      } else if (c == 'N' || c == 'n') { Serial.println(F("")); Serial.println(F("  [RESET] Operacao CANCELADA.")); Serial.println(); return; }
+        if (input == "RESET") { Serial.println(F("  [RESET] Confirmado!")); resetarConfigNVS(); Serial.println(); return; }
+        else { Serial.println(F("  [RESET] Entrada invalida. Cancelado.")); Serial.println(); return; }
+      } else if (c == 'N' || c == 'n') { Serial.println(F("")); Serial.println(F("  [RESET] Cancelado.")); Serial.println(); return; }
       else { input += c; }
     }
     delay(50);
   }
-  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Operacao CANCELADA por seguranca.")); Serial.println();
+  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Cancelado por seguranca.")); Serial.println();
 }
 
 // =============================================================================
@@ -344,15 +593,15 @@ bool executarCalibracao() {
     somaY += accel.acceleration.y / 9.81;
     somaZ += accel.acceleration.z / 9.81;
     coletadas++; delay(5);
-    if ((i + 1) % 50 == 0) { Serial.print(F("  [CAL] ")); Serial.print(i+1); Serial.print(F(" / ")); Serial.print(NUM_AMOSTRAS); Serial.println(F(" amostras...")); }
+    if ((i+1) % 50 == 0) { Serial.print(F("  [CAL] ")); Serial.print(i+1); Serial.print(F(" / ")); Serial.print(NUM_AMOSTRAS); Serial.println(F(" amostras...")); }
     if (Serial.available() > 0) {
       char t = Serial.read();
       if (t == 'X' || t == 'x') {
         Serial.println(F("")); Serial.print(F("  [CAL] Cancelamento apos ")); Serial.print(coletadas); Serial.println(F(" amostras."));
         bool sair = confirmarSaidaCalibracao();
         if (sair) {
-          Serial.println(F("  [CAL] Calibracao ABORTADA. Offsets anteriores mantidos."));
-          if (!calibrado) Serial.println(F("  [CAL] ATENCAO: Nenhuma calibracao ativa."));
+          Serial.println(F("  [CAL] Calibracao ABORTADA. Offsets mantidos."));
+          if (!calibrado) Serial.println(F("  [CAL] ATENCAO: Offsets = 0."));
           Serial.println(F("  ==============================================="));
           emCalibracao = false; return false;
         }
@@ -365,12 +614,11 @@ bool executarCalibracao() {
   offsetAZ = somaZ / NUM_AMOSTRAS;
   calibrado = true;
 
-  Serial.println(F("  [CAL] Calibracao concluida com sucesso!"));
-  Serial.println(F("  [CAL] ------- Offsets Calculados -------"));
-  Serial.print(F("  [CAL]   Offset AX : ")); Serial.print(offsetAX, 5); Serial.println(F(" g"));
-  Serial.print(F("  [CAL]   Offset AY : ")); Serial.print(offsetAY, 5); Serial.println(F(" g"));
-  Serial.print(F("  [CAL]   Offset AZ : ")); Serial.print(offsetAZ, 5); Serial.println(F(" g (inclui ~1g)"));
-  Serial.println(F("  [CAL] Offsets salvos na NVS."));
+  Serial.println(F("  [CAL] Calibracao concluida!"));
+  Serial.println(F("  [CAL] ------- Offsets -------"));
+  Serial.print(F("  [CAL]   AX: ")); Serial.print(offsetAX,5); Serial.println(F(" g"));
+  Serial.print(F("  [CAL]   AY: ")); Serial.print(offsetAY,5); Serial.println(F(" g"));
+  Serial.print(F("  [CAL]   AZ: ")); Serial.print(offsetAZ,5); Serial.println(F(" g (inclui ~1g)"));
   Serial.println(F("  ===============================================")); Serial.println();
   salvarOffsetNVS();
   return true;
@@ -384,17 +632,15 @@ void menuCalibracaoSetup() {
   Serial.println(F("  [NVS] Verificando offsets na flash..."));
   bool ok = carregarOffsetNVS();
   if (ok) {
-    Serial.println(F("  [NVS] Offsets encontrados e carregados!"));
+    Serial.println(F("  [NVS] Offsets carregados!"));
     Serial.print(F("  [NVS]   AX:")); Serial.print(offsetAX,5); Serial.print(F("  AY:")); Serial.print(offsetAY,5); Serial.print(F("  AZ:")); Serial.println(offsetAZ,5);
-    Serial.println(F("  [NVS] Calibracao automatica PULADA — offsets salvos em uso."));
-    Serial.println(F("  [NVS] Envie 'C' para recalibrar ou 'N' para apagar NVS.")); Serial.println();
+    Serial.println(F("  [NVS] Calibracao automatica PULADA."));
+    Serial.println(F("  [NVS] Envie 'C' para recalibrar.")); Serial.println();
   } else {
-    Serial.println(F("  [NVS] Nenhum offset. Iniciando calibracao automatica..."));
-    Serial.println(F("  [SIGMA] Mantenha o sensor PARADO e NIVELADO!"));
-    Serial.println(F("  [SIGMA] Envie 'X' para cancelar."));
+    Serial.println(F("  [NVS] Nenhum offset. Calibracao automatica..."));
     delay(2000);
     bool calOk = executarCalibracao();
-    if (!calOk) { Serial.println(F("  [SIGMA] Calibracao cancelada. Offsets = 0.")); Serial.println(F("  [SIGMA] Envie 'C' para calibrar.")); Serial.println(); }
+    if (!calOk) { Serial.println(F("  [SIGMA] Calibracao cancelada. Offsets=0.")); Serial.println(); }
   }
   emCalibracao = false;
 }
@@ -404,11 +650,11 @@ void menuCalibracaoSetup() {
 // =============================================================================
 void menuCalibracaoLoop() {
   emCalibracao = true;
-  Serial.println(F("")); Serial.println(F("  [CMD] Recalibracao recebida! Monitoramento pausado."));
+  Serial.println(F("")); Serial.println(F("  [CMD] Recalibracao recebida!"));
   bool confirmado = aguardarConfirmacaoEntrada(30000);
-  if (!confirmado) { Serial.println(F("  [CMD] Cancelado. Monitoramento retomado.")); Serial.println(); emCalibracao = false; return; }
+  if (!confirmado) { Serial.println(F("  [CMD] Cancelado.")); Serial.println(); emCalibracao = false; return; }
   bool ok = executarCalibracao();
-  if (!ok) { Serial.println(F("  [INFO] Calibracao interrompida. Offsets mantidos.")); Serial.println(); emCalibracao = false; return; }
+  if (!ok) { Serial.println(F("  [INFO] Interrompida. Offsets mantidos.")); Serial.println(); emCalibracao = false; return; }
   menuPosCalibracao();
 }
 
@@ -429,15 +675,15 @@ bool aguardarConfirmacaoEntrada(uint32_t timeoutMs) {
 
   while ((millis() - inicio) < timeoutMs) {
     esp_task_wdt_reset();
-    if ((millis() - ultSeg) >= 1000) { ultSeg = millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
+    if ((millis() - ultSeg) >= 1000) { ultSeg=millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
     if (Serial.available() > 0) {
       char r = Serial.read(); Serial.println(F(""));
-      if (r == 'S' || r == 's') { Serial.println(F("  [OK] Calibracao CONFIRMADA.")); return true; }
-      if (r == 'N' || r == 'n') { Serial.println(F("  [INFO] Calibracao CANCELADA.")); return false; }
+      if (r=='S'||r=='s') { Serial.println(F("  [OK] CONFIRMADA.")); return true; }
+      if (r=='N'||r=='n') { Serial.println(F("  [INFO] CANCELADA.")); return false; }
     }
     delay(50);
   }
-  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Calibracao cancelada automaticamente.")); return false;
+  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Cancelada automaticamente.")); return false;
 }
 
 // =============================================================================
@@ -458,15 +704,15 @@ bool confirmarSaidaCalibracao() {
 
   while ((millis() - inicio) < TO) {
     esp_task_wdt_reset();
-    if ((millis() - ultSeg) >= 1000) { ultSeg = millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
+    if ((millis() - ultSeg) >= 1000) { ultSeg=millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
     if (Serial.available() > 0) {
       char r = Serial.read(); Serial.println(F(""));
-      if (r == 'S' || r == 's') { Serial.println(F("  [CAL] Saida CONFIRMADA.")); return true; }
-      if (r == 'N' || r == 'n') { Serial.println(F("  [CAL] Saida CANCELADA. Retomando...")); return false; }
+      if (r=='S'||r=='s') { Serial.println(F("  [CAL] Saida CONFIRMADA.")); return true; }
+      if (r=='N'||r=='n') { Serial.println(F("  [CAL] Retomando...")); return false; }
     }
     delay(50);
   }
-  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Coleta retomada automaticamente.")); return false;
+  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Coleta retomada.")); return false;
 }
 
 // =============================================================================
@@ -487,20 +733,20 @@ void menuPosCalibracao() {
 
   while ((millis() - inicio) < TO) {
     esp_task_wdt_reset();
-    if ((millis() - ultSeg) >= 1000) { ultSeg = millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
+    if ((millis() - ultSeg) >= 1000) { ultSeg=millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
     if (Serial.available() > 0) {
       char r = Serial.read(); Serial.println(F(""));
-      if (r == 'S' || r == 's') { Serial.println(F("  [MENU] Monitoramento retomado.")); Serial.println(); emCalibracao = false; return; }
-      if (r == 'R' || r == 'r') {
-        Serial.println(F("  [MENU] Iniciando nova calibracao...")); delay(1000);
+      if (r=='S'||r=='s') { Serial.println(F("  [MENU] Monitoramento retomado.")); Serial.println(); emCalibracao=false; return; }
+      if (r=='R'||r=='r') {
+        Serial.println(F("  [MENU] Nova calibracao...")); delay(1000);
         bool ok = executarCalibracao();
-        if (ok) { menuPosCalibracao(); } else { Serial.println(F("  [INFO] Interrompida.")); Serial.println(); emCalibracao = false; }
+        if (ok) { menuPosCalibracao(); } else { Serial.println(F("  [INFO] Interrompida.")); Serial.println(); emCalibracao=false; }
         return;
       }
     }
     delay(50);
   }
-  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Monitoramento retomado automaticamente.")); Serial.println(); emCalibracao = false;
+  Serial.println(F("")); Serial.println(F("  [TIMEOUT] Monitoramento retomado.")); Serial.println(); emCalibracao=false;
 }
 
 // =============================================================================
@@ -522,91 +768,86 @@ void menuSensibilidade() {
   Serial.println(F("  |  2 = +/-  4g  Media sens. — motores pequenos       |"));
   Serial.println(F("  |  3 = +/-  8g  Uso geral   — industrial medio       |"));
   Serial.println(F("  |  4 = +/- 16g  Baixa sens. — motores pesados        |"));
-  Serial.println(F("  |  M = Ajuste MANUAL dos limiares de alarme          |"));
-  Serial.println(F("  |  S = SAIR sem alterar configuracao                 |"));
+  Serial.println(F("  |  M = Ajuste MANUAL dos limiares                    |"));
+  Serial.println(F("  |  S = SAIR sem alterar                              |"));
   Serial.println(F("  +====================================================+"));
 
   const uint32_t TO = 60000;
   uint32_t inicio = millis(); uint32_t segs = TO/1000; uint32_t ultSeg = millis();
   bool menuAtivo = true;
-  Serial.print(F("  Aguardando selecao... tempo restante: ")); Serial.print(segs); Serial.print(F(" s\r"));
+  Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s\r"));
 
   while (menuAtivo && (millis() - inicio) < TO) {
     esp_task_wdt_reset();
-    if ((millis() - ultSeg) >= 1000) { ultSeg = millis(); segs--; Serial.print(F("  Aguardando selecao... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
+    if ((millis() - ultSeg) >= 1000) { ultSeg=millis(); segs--; Serial.print(F("  Aguardando... tempo restante: ")); Serial.print(segs); Serial.print(F(" s   \r")); }
 
     if (Serial.available() > 0) {
       char opcao = Serial.read(); Serial.println(F(""));
-      if (opcao == 'S' || opcao == 's') { Serial.println(F("  [SENS] Configuracao mantida. Saindo...")); menuAtivo = false; break; }
+      if (opcao=='S'||opcao=='s') { Serial.println(F("  [SENS] Mantida. Saindo...")); menuAtivo=false; break; }
 
-      mpu6050_accel_range_t novaEnum; int novaG = 0; float sAviso = 0, sCrit = 0; bool valida = false;
-      if      (opcao=='1') { novaG=2;  novaEnum=MPU6050_RANGE_2_G;  sAviso=0.5; sCrit=1.0; valida=true; }
-      else if (opcao=='2') { novaG=4;  novaEnum=MPU6050_RANGE_4_G;  sAviso=1.0; sCrit=2.0; valida=true; }
-      else if (opcao=='3') { novaG=8;  novaEnum=MPU6050_RANGE_8_G;  sAviso=2.0; sCrit=4.0; valida=true; }
-      else if (opcao=='4') { novaG=16; novaEnum=MPU6050_RANGE_16_G; sAviso=4.0; sCrit=8.0; valida=true; }
+      mpu6050_accel_range_t novaEnum; int novaG=0; float sAv=0,sCr=0; bool valida=false;
+      if      (opcao=='1') { novaG=2;  novaEnum=MPU6050_RANGE_2_G;  sAv=0.5; sCr=1.0; valida=true; }
+      else if (opcao=='2') { novaG=4;  novaEnum=MPU6050_RANGE_4_G;  sAv=1.0; sCr=2.0; valida=true; }
+      else if (opcao=='3') { novaG=8;  novaEnum=MPU6050_RANGE_8_G;  sAv=2.0; sCr=4.0; valida=true; }
+      else if (opcao=='4') { novaG=16; novaEnum=MPU6050_RANGE_16_G; sAv=4.0; sCr=8.0; valida=true; }
 
       if (valida) {
-        Serial.print(F("  [SENS] Nova escala: +/- ")); Serial.print(novaG); Serial.println(F(" g"));
-        Serial.print(F("  [SENS] Sugestao — Aviso: ")); Serial.print(sAviso,2); Serial.print(F(" g  |  Critico: ")); Serial.print(sCrit,2); Serial.println(F(" g"));
-        Serial.println(F("  S = Aplicar sugestao  |  M = Manual  |  N = Manter atuais"));
+        Serial.print(F("  [SENS] Escala: +/- ")); Serial.print(novaG); Serial.println(F(" g"));
+        Serial.print(F("  [SENS] Sugestao — Av: ")); Serial.print(sAv,2); Serial.print(F("  Cr: ")); Serial.print(sCr,2); Serial.println(F(" g"));
+        Serial.println(F("  S=Aplicar | M=Manual | N=Manter"));
         while (Serial.available()) Serial.read();
-        uint32_t iL = millis(); bool ag = true;
-        while (ag && (millis()-iL) < 30000) {
+        uint32_t iL=millis(); bool ag=true;
+        while (ag && (millis()-iL)<30000) {
           esp_task_wdt_reset();
-          if (Serial.available() > 0) {
-            char res = Serial.read(); Serial.println(F(""));
-            if (res=='S'||res=='s') { VIB_AVISO=sAviso; VIB_CRITICA=sCrit; Serial.println(F("  [SENS] Limiares sugeridos aplicados.")); ag=false; }
+          if (Serial.available()>0) {
+            char res=Serial.read(); Serial.println(F(""));
+            if (res=='S'||res=='s') { VIB_AVISO=sAv; VIB_CRITICA=sCr; Serial.println(F("  [SENS] Sugestao aplicada.")); ag=false; }
             else if (res=='M'||res=='m') {
-              Serial.println(F("  [SENS] Digite VIB_AVISO + Enter:"));
-              while (Serial.available()) Serial.read(); String sA=""; uint32_t t=millis();
-              while ((millis()-t)<30000) { esp_task_wdt_reset(); if (Serial.available()) { char c=Serial.read(); if(c=='\n'||c=='\r') break; sA+=c; } }
-              Serial.println(F("  [SENS] Digite VIB_CRITICA + Enter:"));
-              while (Serial.available()) Serial.read(); String sC=""; t=millis();
-              while ((millis()-t)<30000) { esp_task_wdt_reset(); if (Serial.available()) { char c=Serial.read(); if(c=='\n'||c=='\r') break; sC+=c; } }
-              float nA=sA.toFloat(), nC=sC.toFloat();
-              if (nA>0&&nC>0&&nA<nC) { VIB_AVISO=nA; VIB_CRITICA=nC; Serial.println(F("  [SENS] Limiares manuais aplicados.")); }
-              else { Serial.println(F("  [SENS] ERRO: valores invalidos.")); }
+              Serial.println(F("  VIB_AVISO + Enter:"));
+              while(Serial.available()) Serial.read(); String sA=""; uint32_t t=millis();
+              while((millis()-t)<30000){esp_task_wdt_reset(); if(Serial.available()){char c=Serial.read(); if(c=='\n'||c=='\r') break; sA+=c;}}
+              Serial.println(F("  VIB_CRITICA + Enter:"));
+              while(Serial.available()) Serial.read(); String sC=""; t=millis();
+              while((millis()-t)<30000){esp_task_wdt_reset(); if(Serial.available()){char c=Serial.read(); if(c=='\n'||c=='\r') break; sC+=c;}}
+              float nA=sA.toFloat(),nC=sC.toFloat();
+              if(nA>0&&nC>0&&nA<nC){VIB_AVISO=nA;VIB_CRITICA=nC;Serial.println(F("  [SENS] Manuais aplicados."));}
+              else{Serial.println(F("  [SENS] ERRO invalidos."));}
               ag=false;
-            } else if (res=='N'||res=='n') { Serial.println(F("  [SENS] Limiares mantidos.")); ag=false; }
+            } else if(res=='N'||res=='n'){Serial.println(F("  [SENS] Mantidos.")); ag=false;}
           }
           delay(50);
         }
-        if (ag) { VIB_AVISO=sAviso; VIB_CRITICA=sCrit; Serial.println(F("  [TIMEOUT] Sugestao aplicada automaticamente.")); }
+        if(ag){VIB_AVISO=sAv;VIB_CRITICA=sCr;Serial.println(F("  [TIMEOUT] Sugestao aplicada."));}
         mpu.setAccelerometerRange(novaEnum); escalaAtualG=novaG; salvarConfigNVS();
-        Serial.print(F("  [SENS] Escala aplicada: +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
-        Serial.println(F("  [SENS] Recalibrando apos mudanca de escala..."));
+        Serial.println(F("  [SENS] Recalibrando apos mudanca..."));
         delay(2000); calibrado=false; offsetAX=0; offsetAY=0; offsetAZ=0;
         executarCalibracao(); menuAtivo=false;
 
-      } else if (opcao=='M'||opcao=='m') {
-        Serial.println(F("  [SENS] Ajuste manual (escala mantida)."));
-        Serial.print(F("  VIB_AVISO atual: ")); Serial.print(VIB_AVISO,2); Serial.println(F(" g"));
-        Serial.println(F("  Digite VIB_AVISO + Enter:"));
-        while (Serial.available()) Serial.read(); String sA=""; uint32_t t=millis();
-        while ((millis()-t)<30000) { esp_task_wdt_reset(); if (Serial.available()) { char c=Serial.read(); if(c=='\n'||c=='\r') break; sA+=c; } }
-        Serial.print(F("  VIB_CRITICA atual: ")); Serial.print(VIB_CRITICA,2); Serial.println(F(" g"));
-        Serial.println(F("  Digite VIB_CRITICA + Enter:"));
-        while (Serial.available()) Serial.read(); String sC=""; t=millis();
-        while ((millis()-t)<30000) { esp_task_wdt_reset(); if (Serial.available()) { char c=Serial.read(); if(c=='\n'||c=='\r') break; sC+=c; } }
-        float nA=sA.toFloat(), nC=sC.toFloat();
-        if (nA>0&&nC>0&&nA<nC) { VIB_AVISO=nA; VIB_CRITICA=nC; salvarConfigNVS(); Serial.println(F("  [SENS] Limiares salvos na NVS.")); }
-        else { Serial.println(F("  [SENS] ERRO: valores invalidos.")); }
+      } else if(opcao=='M'||opcao=='m') {
+        Serial.println(F("  [SENS] Ajuste manual."));
+        Serial.println(F("  VIB_AVISO + Enter:"));
+        while(Serial.available()) Serial.read(); String sA=""; uint32_t t=millis();
+        while((millis()-t)<30000){esp_task_wdt_reset(); if(Serial.available()){char c=Serial.read(); if(c=='\n'||c=='\r') break; sA+=c;}}
+        Serial.println(F("  VIB_CRITICA + Enter:"));
+        while(Serial.available()) Serial.read(); String sC=""; t=millis();
+        while((millis()-t)<30000){esp_task_wdt_reset(); if(Serial.available()){char c=Serial.read(); if(c=='\n'||c=='\r') break; sC+=c;}}
+        float nA=sA.toFloat(),nC=sC.toFloat();
+        if(nA>0&&nC>0&&nA<nC){VIB_AVISO=nA;VIB_CRITICA=nC;salvarConfigNVS();Serial.println(F("  [SENS] Salvos na NVS."));}
+        else{Serial.println(F("  [SENS] ERRO invalidos."));}
         menuAtivo=false;
-      } else {
-        Serial.println(F("  [SENS] Opcao invalida. Digite 1, 2, 3, 4, M ou S."));
-      }
+      } else { Serial.println(F("  [SENS] Invalido. 1,2,3,4,M ou S.")); }
     }
     delay(50);
   }
 
-  if (menuAtivo) { Serial.println(F("")); Serial.println(F("  [TIMEOUT] Menu encerrado sem alteracoes.")); }
+  if(menuAtivo){Serial.println(F(""));Serial.println(F("  [TIMEOUT] Menu encerrado."));}
   Serial.println(F(""));
-  Serial.println(F("  [SENS] -------- Configuracao Ativa --------"));
-  Serial.print(F(  "  [SENS]   Escala      : +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
-  Serial.print(F(  "  [SENS]   VIB_AVISO   : ")); Serial.print(VIB_AVISO,   2); Serial.println(F(" g"));
-  Serial.print(F(  "  [SENS]   VIB_CRITICA : ")); Serial.print(VIB_CRITICA, 2); Serial.println(F(" g"));
+  Serial.println(F("  [SENS] -------- Config Ativa --------"));
+  Serial.print(F(  "  [SENS]   Escala : +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
+  Serial.print(F(  "  [SENS]   Aviso  : ")); Serial.print(VIB_AVISO,2); Serial.println(F(" g"));
+  Serial.print(F(  "  [SENS]   Crit.  : ")); Serial.print(VIB_CRITICA,2); Serial.println(F(" g"));
   Serial.println(F("  [SENS] Monitoramento retomado.")); Serial.println();
-  emCalibracao = false;
+  emCalibracao=false;
 }
 
 // =============================================================================
@@ -627,16 +868,29 @@ float calcularVibracaoRMS() {
 
 // =============================================================================
 //  FUNCAO: calcularHealthScore
+//  Quando baseline ativo: componente vibracao usa desvio em sigmas.
+//  Quando baseline inativo: usa limiares absolutos VIB_AVISO/VIB_CRITICA.
 // =============================================================================
 float calcularHealthScore(float temp, float vib, float horas) {
   float sT, sV, sH;
+
   if      (temp <= TEMP_AVISO_MAX) sT = 1.0;
   else if (temp >= TEMP_CRITICA)   sT = 0.0;
   else sT = 1.0 - ((temp-TEMP_AVISO_MAX)/(TEMP_CRITICA-TEMP_AVISO_MAX));
 
-  if      (vib <= VIB_AVISO)   sV = 1.0;
-  else if (vib >= VIB_CRITICA) sV = 0.0;
-  else sV = 1.0 - ((vib-VIB_AVISO)/(VIB_CRITICA-VIB_AVISO));
+  if (basAtivo && basStddev > 0.0) {
+    // Componente vibracao baseada em desvio relativo (sigmas)
+    float desvioSigma = (vib - basMedia) / basStddev;
+    if      (desvioSigma <= 0.0)            sV = 1.0; // Abaixo da media
+    else if (desvioSigma >= 2.0 * fatorK)   sV = 0.0; // Acima do limiar critico
+    else if (desvioSigma <= fatorK)          sV = 1.0; // Dentro do range normal
+    else sV = 1.0 - ((desvioSigma - fatorK) / fatorK); // Degradacao linear
+  } else {
+    // Sem baseline: usa limiares absolutos
+    if      (vib <= VIB_AVISO)   sV = 1.0;
+    else if (vib >= VIB_CRITICA) sV = 0.0;
+    else sV = 1.0 - ((vib-VIB_AVISO)/(VIB_CRITICA-VIB_AVISO));
+  }
 
   float lim = INTERVALO_MANUTENCAO_H * 0.80;
   if      (horas <= lim)                    sH = 1.0;
@@ -648,10 +902,22 @@ float calcularHealthScore(float temp, float vib, float horas) {
 
 // =============================================================================
 //  FUNCAO: classificarAlarme
+//  Quando baseline ativo: usa limiares relativos (media + K*stddev).
+//  Quando baseline inativo: usa VIB_AVISO / VIB_CRITICA absolutos.
 // =============================================================================
 String classificarAlarme(float temp, float vib) {
-  if (temp >= TEMP_CRITICA || vib >= VIB_CRITICA) return "*** CRITICO ***";
-  if (temp >= TEMP_AVISO_MAX || vib >= VIB_AVISO) return "    AVISO    ";
+  float limAviso, limCritico;
+
+  if (basAtivo) {
+    limAviso   = basMedia + fatorK * basStddev;
+    limCritico = basMedia + 2.0 * fatorK * basStddev;
+  } else {
+    limAviso   = VIB_AVISO;
+    limCritico = VIB_CRITICA;
+  }
+
+  if (temp >= TEMP_CRITICA || vib >= limCritico) return "*** CRITICO ***";
+  if (temp >= TEMP_AVISO_MAX || vib >= limAviso)  return "    AVISO    ";
   return "    NORMAL   ";
 }
 
@@ -668,16 +934,29 @@ String obterClassificacaoHealth(float score) {
 void imprimirRelatorio() {
   float hR = INTERVALO_MANUTENCAO_H - horimetro;
   if (hR < 0) hR = 0;
+
   Serial.println(F("------------------------------------------------"));
   Serial.print(F("  Timestamp       : ")); Serial.print(millis()); Serial.println(F(" ms"));
   Serial.println(F("------------------------------------------------"));
   Serial.print(F("  Temperatura     : ")); Serial.print(temperatura,1); Serial.println(F(" oC"));
   Serial.print(F("  Vibracao        : ")); Serial.print(vibracaoRMS,3); Serial.println(F(" g"));
+
+  // Exibe baseline quando ativo
+  if (basAtivo) {
+    float limAv = basMedia + fatorK * basStddev;
+    float limCr = basMedia + 2.0 * fatorK * basStddev;
+    float desvio = (vibracaoRMS - basMedia) / basStddev;
+    Serial.print(F("  Baseline Vib.   : ")); Serial.print(basMedia,4); Serial.print(F(" g  |  Stddev: ")); Serial.print(basStddev,4); Serial.println(F(" g"));
+    Serial.print(F("  Desvio Atual    : ")); Serial.print(desvio,2); Serial.print(F(" sigma  |  K=")); Serial.print(fatorK,1); Serial.print(F("  |  Lim.Av: ")); Serial.print(limAv,4); Serial.print(F(" g  |  Lim.Cr: ")); Serial.print(limCr,4); Serial.println(F(" g"));
+  } else {
+    Serial.println(F("  Baseline Vib.   : Nao coletado (usando limiares absolutos)"));
+  }
+
   Serial.print(F("  Horimetro       : ")); Serial.print(horimetro,4); Serial.print(F(" h  (base: ")); Serial.print(horasBase,1); Serial.println(F(" h)"));
   Serial.print(F("  Prox. Manut.    : ")); Serial.print(hR,1); Serial.println(F(" h restantes"));
   Serial.print(F("  Health Score    : ")); Serial.print(healthScore,1); Serial.print(F(" %  (")); Serial.print(obterClassificacaoHealth(healthScore)); Serial.println(F(")"));
   Serial.print(F("  Escala Acel.    : +/- ")); Serial.print(escalaAtualG); Serial.print(F(" g  |  Aviso: ")); Serial.print(VIB_AVISO,2); Serial.print(F(" g  |  Critico: ")); Serial.print(VIB_CRITICA,2); Serial.println(F(" g"));
-  Serial.print(F("  Offsets NVS     : ")); Serial.println(calibrado ? F("Salvos (calibracao ativa)") : F("Zerados (sem calibracao)"));
+  Serial.print(F("  Offsets NVS     : ")); Serial.println(calibrado ? F("Salvos") : F("Zerados"));
   Serial.print(F("  Resets Sistema  : ")); Serial.print(resetCount); Serial.print(F("  | Ultimo: ")); Serial.println(resetMotivo);
   Serial.print(F("  Alarme          : ")); Serial.println(statusAlarme);
   Serial.println(F("------------------------------------------------")); Serial.println();
@@ -690,12 +969,10 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println(F("=============================================="));
-  Serial.println(F("  Project SIGMA v0.1.4.0 - Iniciando..."));
+  Serial.println(F("  Project SIGMA v0.1.5.0 - Iniciando..."));
   Serial.println(F("=============================================="));
 
-  // Hardware Watchdog — API ESP-IDF v5.x
-  // O watchdog ja e inicializado pelo framework Arduino.
-  // Usamos reconfigure para ajustar o timeout e add para registrar a task.
+  // Hardware Watchdog — ESP-IDF v5.x
   esp_task_wdt_config_t wdtCfg = {
     .timeout_ms     = WDT_TIMEOUT_MS,
     .idle_core_mask = 0,
@@ -703,56 +980,51 @@ void setup() {
   };
   esp_task_wdt_reconfigure(&wdtCfg);
   esp_task_wdt_add(NULL);
-  Serial.print(F("  [WDT] Hardware Watchdog configurado (timeout: "));
-  Serial.print(WDT_TIMEOUT_MS/1000); Serial.println(F("s)."));
+  Serial.print(F("  [WDT] Watchdog configurado (")); Serial.print(WDT_TIMEOUT_MS/1000); Serial.println(F("s)."));
 
-  // Carrega resets e horimetro da NVS
+  // Carrega NVS
   carregarResetNVS();
-  Serial.print(F("  [SYS] Resets: ")); Serial.print(resetCount); Serial.print(F(" | Ultimo: ")); Serial.println(resetMotivo);
+  Serial.print(F("  [SYS] Resets: ")); Serial.print(resetCount); Serial.print(F(" | ")); Serial.println(resetMotivo);
   horasBase = carregarHorimetroNVS();
-  if (horasBase > 0.0) { Serial.print(F("  [NVS] Horimetro: ")); Serial.print(horasBase,4); Serial.println(F(" h")); }
-  else { Serial.println(F("  [NVS] Horimetro: zero.")); }
+  Serial.print(F("  [NVS] Horimetro: ")); Serial.print(horasBase > 0 ? horasBase : 0, 4); Serial.println(F(" h"));
 
-  // Carrega configuracao da NVS
   bool cfgOk = carregarConfigNVS();
-  if (cfgOk) {
-    Serial.println(F("  [NVS] Configuracao carregada (sigma_cfg)."));
-    Serial.print(F("  [NVS]   Escala: +/- ")); Serial.print(escalaAtualG); Serial.print(F(" g  |  Aviso: ")); Serial.print(VIB_AVISO,2); Serial.print(F(" g  |  Crit: ")); Serial.print(VIB_CRITICA,2); Serial.println(F(" g"));
-  } else { Serial.println(F("  [NVS] Configuracao: padroes de fabrica.")); }
+  if (cfgOk) { Serial.print(F("  [NVS] Config: Escala=+/-")); Serial.print(escalaAtualG); Serial.print(F("g  Av=")); Serial.print(VIB_AVISO,2); Serial.print(F("  Cr=")); Serial.print(VIB_CRITICA,2); Serial.println(F(" g")); }
+  else { Serial.println(F("  [NVS] Config: padroes de fabrica.")); }
 
-  // I2C
+  bool basOk = carregarBaselineNVS();
+  if (basOk) {
+    Serial.println(F("  [NVS] Baseline carregado (sigma_bas):"));
+    Serial.print(F("  [NVS]   Media: ")); Serial.print(basMedia,4); Serial.print(F(" g  |  Stddev: ")); Serial.print(basStddev,4); Serial.print(F(" g  |  K=")); Serial.println(fatorK,1);
+  } else { Serial.println(F("  [NVS] Baseline: nenhum. Envie 'B' para coletar.")); }
+
+  // I2C + MPU6050
   Wire.begin(PINO_MPU_SDA, PINO_MPU_SCL);
   Wire.setClock(400000); delay(150);
-  Serial.println(F("  [I2C] Barramento iniciado (400 kHz)."));
+  Serial.println(F("  [I2C] Iniciado (400 kHz)."));
 
-  // MPU6050
   bool mpuOk = false;
   for (int t = 1; t <= 5; t++) {
     esp_task_wdt_reset();
-    Serial.print(F("  [I2C] Tentativa ")); Serial.print(t); Serial.print(F("/5 MPU6050..."));
-    if (mpu.begin()) { mpuOk=true; Serial.println(F(" ENCONTRADO!")); break; }
-    Serial.println(F(" nao respondeu.")); delay(200);
+    Serial.print(F("  [I2C] Tentativa ")); Serial.print(t); Serial.print(F("/5..."));
+    if (mpu.begin()) { mpuOk=true; Serial.println(F(" OK!")); break; }
+    Serial.println(F(" falhou.")); delay(200);
   }
   if (!mpuOk) {
     Serial.println(F("  [ERRO FATAL] MPU6050 nao encontrado!"));
-    Serial.println(F("  1. Pull-up SDA/SCL ao 3.3V?"));
-    Serial.println(F("  2. VCC=3.3V? GND=GND?"));
-    Serial.println(F("  3. AD0=GND(0x68) ou AD0=3.3V(0x69)?"));
-    esp_task_wdt_delete(NULL); // Remove WDT para nao reiniciar em loop
+    Serial.println(F("  Verifique pull-ups SDA/SCL, VCC=3.3V, GND."));
+    esp_task_wdt_delete(NULL);
     while (true) delay(1000);
   }
-  Serial.println(F("  [OK]  MPU6050 inicializado."));
 
-  // Aplica escala carregada da NVS
   mpu6050_accel_range_t escEnum = MPU6050_RANGE_8_G;
   if      (escalaAtualG==2)  escEnum = MPU6050_RANGE_2_G;
   else if (escalaAtualG==4)  escEnum = MPU6050_RANGE_4_G;
   else if (escalaAtualG==16) escEnum = MPU6050_RANGE_16_G;
   mpu.setAccelerometerRange(escEnum);
-  Serial.print(F("  [MPU] Escala: +/- ")); Serial.print(escalaAtualG); Serial.println(F(" g"));
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-  Serial.println(F("  [MPU] Giroscopio: 500deg/s | Filtro: 21Hz"));
+  Serial.print(F("  [MPU] Escala: +/-")); Serial.print(escalaAtualG); Serial.println(F("g | Gyro:500dps | Filtro:21Hz"));
 
   // Calibracao
   menuCalibracaoSetup();
@@ -761,15 +1033,16 @@ void setup() {
   sensorTemp.begin();
   int qtd = sensorTemp.getDeviceCount();
   Serial.print(F("  [DS18B20] Sensores: ")); Serial.println(qtd);
-  if (qtd==0) { Serial.println(F("  [AVISO] Nenhum DS18B20!")); }
-  else { sensorTemp.setResolution(12); Serial.println(F("  [DS18B20] Resolucao: 12 bits")); }
+  if (qtd==0) { Serial.println(F("  [AVISO] DS18B20 nao encontrado!")); }
+  else { sensorTemp.setResolution(12); Serial.println(F("  [DS18B20] 12 bits.")); }
 
   inicioSistema = millis(); ultimaLeitura = millis(); ultimoSaveHorimetro = millis();
 
   Serial.println(F("=============================================="));
-  Serial.println(F("  Sistema pronto. Monitoramento iniciado."));
-  Serial.println(F("  C=Recalibrar  A=Sensibilidade"));
-  Serial.println(F("  N=Apagar NVS  H=Zerar Hor.  R=Reset Cfg"));
+  Serial.println(F("  Sistema pronto!"));
+  Serial.println(F("  C=Calibrar   A=Sensibilidade  B=Baseline"));
+  Serial.println(F("  N=Limpar NVS H=Zerar Hor.     R=Reset Cfg"));
+  Serial.println(F("  K=Fator K    Z=Apagar Baseline"));
   Serial.println(F("==============================================")); Serial.println();
 }
 
@@ -778,19 +1051,22 @@ void setup() {
 // =============================================================================
 void loop() {
   unsigned long agora = millis();
-  esp_task_wdt_reset(); // Alimenta o watchdog a cada ciclo
+  esp_task_wdt_reset();
 
   // Comandos Serial
   if (!emCalibracao && Serial.available() > 0) {
     char cmd = Serial.read();
     if      (cmd=='C'||cmd=='c') { menuCalibracaoLoop(); }
-    else if (cmd=='A'||cmd=='a') { Serial.println(F("  [CMD] Menu sensibilidade!")); menuSensibilidade(); }
-    else if (cmd=='N'||cmd=='n') { Serial.println(F("  [CMD] Apagando NVS cal...")); apagarOffsetNVS(); menuCalibracaoLoop(); }
+    else if (cmd=='A'||cmd=='a') { Serial.println(F("  [CMD] Sensibilidade!")); menuSensibilidade(); }
+    else if (cmd=='N'||cmd=='n') { apagarOffsetNVS(); menuCalibracaoLoop(); }
     else if (cmd=='H'||cmd=='h') { zerarHorimetroNVS(); }
     else if (cmd=='R'||cmd=='r') { confirmarResetConfig(); }
+    else if (cmd=='B'||cmd=='b') { coletarBaseline(); }
+    else if (cmd=='K'||cmd=='k') { ajustarFatorK(); }
+    else if (cmd=='Z'||cmd=='z') { apagarBaselineNVS(); }
   }
 
-  // Salvamento automatico do horimetro (a cada 5 min)
+  // Salvamento automatico do horimetro (5 min)
   if (!emCalibracao && (agora - ultimoSaveHorimetro) >= INTERVALO_SAVE_HORIMETRO_MS) {
     ultimoSaveHorimetro = agora; salvarHorimetroNVS();
   }
@@ -800,14 +1076,12 @@ void loop() {
     ultimaLeitura = agora;
     horimetro = horasBase + (float)(agora - inicioSistema) / 3600000.0;
 
-    // Temperatura com watchdog de sensor
     sensorTemp.requestTemperatures();
     float lT = sensorTemp.getTempCByIndex(0);
-    if (lT != DEVICE_DISCONNECTED_C) {
-      temperatura = lT; falhasDS18B20 = 0;
-    } else {
+    if (lT != DEVICE_DISCONNECTED_C) { temperatura=lT; falhasDS18B20=0; }
+    else {
       falhasDS18B20++;
-      Serial.print(F("  [AVISO] Falha DS18B20! (")); Serial.print(falhasDS18B20); Serial.print(F("/")); Serial.print(MAX_FALHAS_DS18B20); Serial.println(F(")"));
+      Serial.print(F("  [AVISO] Falha DS18B20 (")); Serial.print(falhasDS18B20); Serial.print(F("/")); Serial.print(MAX_FALHAS_DS18B20); Serial.println(F(")"));
       if (falhasDS18B20 >= MAX_FALHAS_DS18B20) { reiniciarSistema("Falha consecutiva DS18B20 (5x)"); }
     }
 
