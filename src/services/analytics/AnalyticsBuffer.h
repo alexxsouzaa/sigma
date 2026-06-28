@@ -5,7 +5,7 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.0
+//  Versao     : 0.1.6.1
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -13,18 +13,7 @@
 
 #include <stdint.h>
 #include "../../hal/Version.h"
-
-// -------------------------
-//  Estrutura de dados base
-// -------------------------
-struct AnalyticsSample {
-  uint32_t timestamp;   // (ms) Momento da coleta
-  float    temperature; // (oC) Temperatura lida
-  float    vibration;   // (g)  Vibracao RMS
-  float    health;      // (%)  Health Score calculado
-  float    runtime;     // (h)  Horimetro acumulado
-  uint8_t  alarm;       // 0=NORMAL, 1=AVISO, 2=CRITICO
-};
+#include "AnalyticsTypes.h" // Importa os contratos (Structs/Enums)
 
 // =============================================================
 //  CLASSE: AnalyticsBuffer

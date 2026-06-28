@@ -5,7 +5,7 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.0
+//  Versao     : 0.1.6.1
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -14,7 +14,7 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.6.0"
+#define SIGMA_FIRMWARE_VERSION "0.1.6.1"
 #define SIGMA_CODENAME         "Foundation"
 
 // -------------------------
