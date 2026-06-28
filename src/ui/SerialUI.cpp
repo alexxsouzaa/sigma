@@ -5,7 +5,7 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.5.1
+//  Versao     : 0.1.6.0
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -97,7 +97,9 @@ void SerialUI::imprimirMensagem(const char* prefixo, const char* mensagem) {
 void SerialUI::imprimirCabecalhoBoot() {
   Serial.println(F(""));
   Serial.println(F(LINHA_SEP));
-  Serial.println(F(" Project SIGMA v0.1.5.1 - Iniciando..."));
+  Serial.print(F(" Project SIGMA v"));
+  Serial.print(F(SIGMA_FIRMWARE_VERSION));
+  Serial.println(F(" - Iniciando..."));
   Serial.println(F(LINHA_SEP));
 }
 

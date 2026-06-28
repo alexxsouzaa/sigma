@@ -5,7 +5,7 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.5.1
+//  Versao     : 0.1.6.0
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -28,6 +28,10 @@
 #include "services/AlarmService.h"
 #include "ui/SerialUI.h"
 
+// Analytics
+#include "hal/Version.h"
+#include "services/analytics/AnalyticsBuffer.h"
+
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
 // =============================================================
@@ -42,6 +46,8 @@ NvsBaseline        nvsBas;
 HealthService      srvHealth;
 AlarmService       srvAlarm;
 SerialUI           ui;
+
+AnalyticsBuffer    analyticsBuffer;
 
 // =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
@@ -150,6 +156,21 @@ void loop() {
     float score        = srvHealth.calcularScore(tAtual, vAtual, horasTotais, hCtx);
     const char* txtH   = srvHealth.classificar(score);
     const char* txtAlm = srvAlarm.classificar(tAtual, vAtual, aCtx);
+
+    // Alimentacao do AnalyticsBuffer (Invisivel ao usuario)
+    uint8_t almCode = 0;
+    if (strcmp(txtAlm, "AVISO") == 0)   almCode = 1;
+    if (strcmp(txtAlm, "CRITICO") == 0) almCode = 2;
+
+    AnalyticsSample novaAmostra = {
+      .timestamp   = agora,
+      .temperature = tAtual,
+      .vibration   = vAtual,
+      .health      = score,
+      .runtime     = horasTotais,
+      .alarm       = almCode
+    };
+    analyticsBuffer.addSample(novaAmostra);
 
     // Renderizacao Camada UI
     ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm);

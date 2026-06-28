@@ -5,7 +5,7 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.5.1
+//  Versao     : 0.1.6.0
 //  Data       : 2026-06-27
 // =============================================================
 
