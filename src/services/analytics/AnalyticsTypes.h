@@ -5,7 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.1
+//  Versao     : 0.1.6.4
+//  Codename   : Bugfixes e Limpeza
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -38,8 +39,9 @@ struct AnalyticsSample {
 //  Contrato de Saida (API)
 // -------------------------
 struct AnalyticsResult {
-  float meanTemperature; // (oC) Media da janela
-  float meanVibration;   // (g)  Media da janela
-  bool  anomalyDetected; // true se anomalia identificada
-  // Futuros campos MQTT / IA entrarao aqui
+  float meanTemperature;  // (oC) Media da janela
+  float meanVibration;    // (g)  Media da janela
+  float temperatureTrend; // (Slope) > 0 aquecendo, < 0 esfriando
+  float vibrationTrend;   // (Slope) > 0 piorando, < 0 melhorando
+  bool  anomalyDetected;  // true se anomalia identificada
 };

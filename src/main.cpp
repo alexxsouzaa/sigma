@@ -5,7 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.1
+//  Versao     : 0.1.6.4
+//  Codename   : Bugfixes e Limpeza
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -33,6 +34,10 @@
 #include "services/analytics/AnalyticsBuffer.h"
 #include "services/analytics/AnalyticsEngine.h"
 
+#include "ui/CommandHandler.h"
+
+#include "services/CalibrationService.h"
+
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
 // =============================================================
@@ -49,6 +54,10 @@ AlarmService       srvAlarm;
 SerialUI           ui;
 
 AnalyticsEngine    analytics;
+
+CommandHandler     cmdHandler;
+
+CalibrationService srvCal;
 
 // =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
@@ -112,6 +121,19 @@ void loop() {
   esp_task_wdt_reset();
   uint32_t agora = millis();
 
+  // Instancia dinamica do contexto contendo apenas as referencias
+  CommandContext cmdCtx = {
+    .nvsHor = nvsHor,       .horData = horData,
+    .nvsBas = nvsBas,       .basData = basData,
+    .nvsCal = nvsCal,       .calData = calData,
+    .nvsCfg = nvsCfg,       .cfgData = cfgData,
+    .driverVib = driverVib, .srvCal  = srvCal, 
+    .ui = ui,               .inicioSistemaMs = inicioSistemaMs
+  };
+
+  // Despacha para o modulo UI encarregado
+  cmdHandler.processar(cmdCtx);
+
   // Tratamento de comandos na UI poderia ser acionado aqui:
   // if (Serial.available()) processarComandos();
 
@@ -154,11 +176,12 @@ void loop() {
     };
 
     // Calculos Camada 4
+    // 1. Processamento e Classificacao (Instantâneo)
     float score        = srvHealth.calcularScore(tAtual, vAtual, horasTotais, hCtx);
     const char* txtH   = srvHealth.classificar(score);
     const char* txtAlm = srvAlarm.classificar(tAtual, vAtual, aCtx);
 
-    // Conversao segura via Enum Class
+    // 2. Empacotamento Seguro via Enum Class
     AlarmLevel almCode = AlarmLevel::NORMAL;
     if (strcmp(txtAlm, "AVISO") == 0)   almCode = AlarmLevel::WARNING;
     if (strcmp(txtAlm, "CRITICO") == 0) almCode = AlarmLevel::CRITICAL;
@@ -172,13 +195,13 @@ void loop() {
       .alarm       = almCode
     };
     
-    // Insercao isolada pela fachada
+    // 3. Insercao na Fachada Analitica
     analytics.processSample(novaAmostra);
 
-    // Opcional para telemetria futura:
-    // AnalyticsResult res = analytics.getLatestResult();
+    // 4. Extracao sob demanda da API (Regressao Linear + Medias)
+    AnalyticsResult res = analytics.getLatestResult();
 
-    // Renderizacao Camada UI (Inalterada)
-    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm);
+    // 5. Renderizacao Camada UI conectada a API
+    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm, res);
   }
 }

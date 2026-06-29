@@ -5,7 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.1
+//  Versao     : 0.1.6.4
+//  Codename   : Bugfixes e Limpeza
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -13,6 +14,7 @@
 
 #include <Arduino.h>
 #include "hal/Version.h"
+#include "../services/analytics/AnalyticsTypes.h" // Importa o contrato da API
 
 // Macros de layout SUS
 #define LINHA_SEP "============================================================"
@@ -32,5 +34,6 @@ public:
   void imprimirErroFatal(const char* erro, const char* acao);
   void exibirMenuSensibilidade(int escalaAtual, float aviso, float critico);
   void imprimirRelatorio(uint32_t tempoMs, float temp, float vib, float horas, 
-                         float score, const char* clHealth, const char* clAlarme);
+                         float score, const char* clHealth, const char* clAlarme,
+                         const AnalyticsResult& analytics);
 };

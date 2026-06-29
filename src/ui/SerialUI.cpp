@@ -5,7 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.1
+//  Versao     : 0.1.6.4
+//  Codename   : Bugfixes e Limpeza
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -109,17 +110,42 @@ void SerialUI::imprimirErroFatal(const char* erro, const char* acao) {
   Serial.println(F(LINHA_SEP));
 }
 
+// =============================================================
+//  FUNCAO: imprimirRelatorio
+//  Renderiza status instantaneo e preditivo (SUS sec 11).
+// =============================================================
 void SerialUI::imprimirRelatorio(uint32_t tempoMs, float temp, float vib, float horas, 
-                                 float score, const char* clHealth, const char* clAlarme) {
+                                 float score, const char* clHealth, const char* clAlarme,
+                                 const AnalyticsResult& analytics) {
   Serial.println(F(LINHA_SUB));
   Serial.print(F("  Timestamp       : ")); Serial.print(tempoMs); Serial.println(F(" ms"));
   Serial.println(F(LINHA_SUB));
   
+  // Status Instantaneo
   Serial.print(F("  Temperatura     : ")); Serial.print(temp, 1); Serial.println(F(" oC"));
   Serial.print(F("  Vibracao RMS    : ")); Serial.print(vib, 3); Serial.println(F(" g"));
   Serial.print(F("  Horimetro       : ")); Serial.print(horas, 1); Serial.println(F(" h"));
-  Serial.print(F("  Health Score    : ")); Serial.print(score, 1); Serial.print(F(" % (")); Serial.print(clHealth); Serial.println(F(")"));
-  Serial.print(F("  Alarme          : ")); Serial.println(clAlarme);
+  Serial.print(F("  Health Score    : ")); Serial.print(score, 1); 
+  Serial.print(F(" % (")); Serial.print(clHealth); Serial.println(F(")"));
+  Serial.print(F("  Alarme Atual    : ")); Serial.println(clAlarme);
+
+  // Analise Preditiva (Consumindo a API Analytics)
+  Serial.println(F(LINHA_SUB));
+  Serial.println(F("  Analise Preditiva (Buffer)"));
+  Serial.println(F(LINHA_SUB));
+  Serial.print(F("  Media Temp.     : ")); 
+  Serial.print(analytics.meanTemperature, 1); Serial.println(F(" oC"));
+  Serial.print(F("  Tendencia Temp. : ")); 
+  Serial.print(analytics.temperatureTrend, 4); Serial.println(F(" oC/ciclo"));
+  
+  Serial.print(F("  Media Vibracao  : ")); 
+  Serial.print(analytics.meanVibration, 3); Serial.println(F(" g"));
+  Serial.print(F("  Tendencia Vib.  : ")); 
+  Serial.print(analytics.vibrationTrend, 5); Serial.println(F(" g/ciclo"));
+  
+  Serial.print(F("  Anomalia Prev.  : "));
+  Serial.println(analytics.anomalyDetected ? F("SIM (Alerta em histórico)") : F("NAO (Estável)"));
+  
   Serial.println(F(LINHA_SUB));
   Serial.println();
 }

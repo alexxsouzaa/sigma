@@ -5,7 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.1
+//  Versao     : 0.1.6.4
+//  Codename   : Bugfixes e Limpeza
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -30,10 +31,9 @@ bool NvsHorimeter::carregar(NvsHorimeterData& dados) {
   dados.horimetro  = prefs.getFloat("horimetro", 0.0f);
   dados.resetCount = prefs.getInt("resetCount", 0);
   
-  // Extrai string limitada para evitar estouro de buffer
-  String motivo = prefs.getString("resetMotivo", "Nenhum");
-  strncpy(dados.resetMotivo, motivo.c_str(), 31);
-  dados.resetMotivo[31] = '\0'; // Garante terminador nulo
+  // Le string direto para o buffer estatico sem String local
+  prefs.getString("resetMotivo", "Nenhum").toCharArray(
+    dados.resetMotivo, 32);
   
   prefs.end();
   return true;

@@ -5,7 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.1
+//  Versao     : 0.1.6.4
+//  Codename   : Bugfixes e Limpeza
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -35,8 +36,11 @@ Ds18b20Driver::~Ds18b20Driver() {
 bool Ds18b20Driver::begin(uint8_t pino) {
   // Alocacao em boot-time e aceitavel. Nunca em runtime.
   _oneWire = new OneWire(pino);
+  if (!_oneWire) return false;
+
   _sensor  = new DallasTemperature(_oneWire);
-  
+  if (!_sensor) { delete _oneWire; _oneWire = nullptr; return false; }
+
   _sensor->begin();
   int qtd = _sensor->getDeviceCount();
   
