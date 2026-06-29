@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.0
-//  Codename   : Filtro Digital
+//  Versao     : 0.1.7.1
+//  Codename   : Remocao de Gravidade
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -70,6 +70,11 @@ NvsCalibrationData calData;
 NvsHorimeterData   horData;
 NvsConfigData      cfgData;
 NvsBaselineData    basData;
+
+// Estado dos filtros DC para remocao de gravidade
+static float _dcX = 0.0f;
+static float _dcY = 0.0f;
+static float _dcZ = 0.0f;
 
 uint32_t ultimaLeituraMs = 0;
 uint32_t inicioSistemaMs = 0;
@@ -173,10 +178,18 @@ void loop() {
     float vBruta = 0.0f;
     
     if (vibDado.valido) {
-      // Computa RMS a partir da aceleracao
-      vBruta = sqrt((vibDado.ax * vibDado.ax) + 
-                    (vibDado.ay * vibDado.ay) + 
-                    (vibDado.az * vibDado.az));
+      // Remove DC (gravidade + bias) de cada eixo via EMA lenta
+      // para que o RMS reflita apenas a componente vibratoria
+      const float alfaDC = 0.005f; // ~100s de constante no 500ms
+      float axAC = vibDado.ax - _dcX;
+      float ayAC = vibDado.ay - _dcY;
+      float azAC = vibDado.az - _dcZ;
+      _dcX += alfaDC * (vibDado.ax - _dcX);
+      _dcY += alfaDC * (vibDado.ay - _dcY);
+      _dcZ += alfaDC * (vibDado.az - _dcZ);
+
+      // RMS apenas da energia dinamica (AC)
+      vBruta = sqrt((axAC * axAC) + (ayAC * ayAC) + (azAC * azAC));
     }
 
     // Aplica filtro digital as leituras brutas

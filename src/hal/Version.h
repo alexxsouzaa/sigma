@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.0
-//  Codename   : Filtro Digital
+//  Versao     : 0.1.7.1
+//  Codename   : Remocao de Gravidade
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -15,8 +15,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.7.0"
-#define SIGMA_CODENAME         "Filtro Digital"
+#define SIGMA_FIRMWARE_VERSION "0.1.7.1"
+#define SIGMA_CODENAME         "Remocao de Gravidade"
 
 // -------------------------
 //  Analytics Engine
