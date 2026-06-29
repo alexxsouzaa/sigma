@@ -149,7 +149,7 @@ Detectar tendências.
 
 ## T010 — Analytics API
 
-Status: Concluído
+Status: Em desenvolvimento
 
 Objetivo
 
@@ -173,8 +173,6 @@ Garantir confiabilidade dos dados.
 ---
 
 ## T011 — Filtro Digital
-
-Status: Concluído
 
 Implementar filtros para redução de ruído.
 
