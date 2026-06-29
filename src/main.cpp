@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.6.4
-//  Codename   : Bugfixes e Limpeza
+//  Versao     : 0.1.7.0
+//  Codename   : Filtro Digital
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -37,6 +37,7 @@
 #include "ui/CommandHandler.h"
 
 #include "services/CalibrationService.h"
+#include "services/filter/DigitalFilter.h"
 
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
@@ -54,6 +55,9 @@ AlarmService       srvAlarm;
 SerialUI           ui;
 
 AnalyticsEngine    analytics;
+
+DigitalFilter filtroTemp;
+DigitalFilter filtroVib;
 
 CommandHandler     cmdHandler;
 
@@ -110,6 +114,21 @@ void setup() {
     ui.imprimirMensagem("OK", "DS18B20 inicializado.");
   }
 
+  // Configuracao dos filtros digitais (Fase 2 — T011)
+  FilterConfig cfgTemp;
+  cfgTemp.tipo   = FilterType::MEDIA_MOVEL;
+  cfgTemp.janela = 5;
+  cfgTemp.alfa   = 0.3f;
+  filtroTemp.configurar(cfgTemp);
+
+  FilterConfig cfgVib;
+  cfgVib.tipo   = FilterType::MEDIA_MOVEL;
+  cfgVib.janela = 5;
+  cfgVib.alfa   = 0.3f;
+  filtroVib.configurar(cfgVib);
+
+  ui.imprimirMensagem("INFO", "Filtros digitais configurados.");
+
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
 }
@@ -149,16 +168,20 @@ void loop() {
     Ds18b20Data tempDado = driverTemp.lerTemperatura();
     Mpu6050Data vibDado  = driverVib.lerAceleracao(calData.offsetAX, calData.offsetAY, calData.offsetAZ);
 
-    // Validação estrita
-    float tAtual = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;
-    float vAtual = 0.0f;
+    // Validacao estrita e filtragem digital
+    float tBruta = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;
+    float vBruta = 0.0f;
     
     if (vibDado.valido) {
-      // Computa RMS a partir da aceleração
-      vAtual = sqrt((vibDado.ax * vibDado.ax) + 
+      // Computa RMS a partir da aceleracao
+      vBruta = sqrt((vibDado.ax * vibDado.ax) + 
                     (vibDado.ay * vibDado.ay) + 
                     (vibDado.az * vibDado.az));
     }
+
+    // Aplica filtro digital as leituras brutas
+    float tAtual = filtroTemp.filtrar(tBruta);
+    float vAtual = filtroVib.filtrar(vBruta);
 
     // Estruturacao do contexto para Camada 4
     HealthContext hCtx = {
