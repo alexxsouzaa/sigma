@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.1
-//  Codename   : Remocao de Gravidade
+//  Versao     : 0.1.7.2
+//  Codename   : Calibracao Robusta I2C
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -28,8 +28,12 @@ CalibrationResult CalibrationService::executar(Mpu6050Driver& driver,
   for (int i = 1; i <= 200; i++) {
     esp_task_wdt_reset(); // Evita reset durante operacao longa
     
-    // Leitura bruta (sem offsets aplicados)
-    Mpu6050Data bruto = driver.lerAceleracao(0.0f, 0.0f, 0.0f);
+    // Leitura bruta (sem offsets aplicados) com ate 3 tentativas
+    Mpu6050Data bruto = { 0.0f, 0.0f, 0.0f, false };
+    for (int tent = 0; tent < 3 && !bruto.valido; tent++) {
+      bruto = driver.lerAceleracao(0.0f, 0.0f, 0.0f);
+      if (!bruto.valido) delay(10);
+    }
     
     if (bruto.valido) {
       somaX += bruto.ax;
@@ -43,7 +47,7 @@ CalibrationResult CalibrationService::executar(Mpu6050Driver& driver,
       cb(context, i, 200);
     }
     
-    delay(5); // Estabilizacao temporal do I2C
+    delay(20); // Intervalo entre leituras para nao saturar o barramento
   }
 
   if (amostrasValidas > 0) {

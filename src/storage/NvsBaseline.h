@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.1
-//  Codename   : Remocao de Gravidade
+//  Versao     : 0.1.7.2
+//  Codename   : Calibracao Robusta I2C
 //  Data       : 2026-06-27
 // =============================================================
 
