@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.4
-//  Codename   : Calibracao Passo Fix
+//  Versao     : 0.1.7.5
+//  Codename   : Calibracao Nao-Bloqueante Fix
 //  Data       : 2026-06-27
 // =============================================================
 
