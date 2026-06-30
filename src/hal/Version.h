@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.6
-//  Codename   : Pausa Monitoramento Calibracao
+//  Versao     : 0.1.8.0
+//  Codename   : Deteccao de Outliers
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -15,8 +15,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.7.6"
-#define SIGMA_CODENAME         "Pausa Monitoramento Calibracao"
+#define SIGMA_FIRMWARE_VERSION "0.1.8.0"
+#define SIGMA_CODENAME         "Deteccao de Outliers"
 
 // -------------------------
 //  Analytics Engine

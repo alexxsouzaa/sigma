@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.6
-//  Codename   : Pausa Monitoramento Calibracao
+//  Versao     : 0.1.8.0
+//  Codename   : Deteccao de Outliers
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -38,6 +38,7 @@
 
 #include "services/CalibrationService.h"
 #include "services/filter/DigitalFilter.h"
+#include "services/filter/OutlierFilter.h"
 
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
@@ -58,6 +59,8 @@ AnalyticsEngine    analytics;
 
 DigitalFilter filtroTemp;
 DigitalFilter filtroVib;
+OutlierFilter outlierTemp;
+OutlierFilter outlierVib;
 
 CommandHandler     cmdHandler;
 
@@ -134,6 +137,11 @@ void setup() {
 
   ui.imprimirMensagem("INFO", "Filtros digitais configurados.");
 
+  // Configuracao dos filtros de outlier (T012)
+  outlierTemp.configurar(-55.0f, 125.0f);
+  outlierVib.configurar(0.0f, (float)cfgData.escalaG);
+  ui.imprimirMensagem("OK", "Filtros de outlier configurados.");
+
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
 }
@@ -179,6 +187,11 @@ void loop() {
     // Validacao estrita e filtragem digital
     float tBruta = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;
     float vBruta = 0.0f;
+
+    if (tempDado.valido) {
+      tBruta = outlierTemp.filtrar(tBruta);
+      if (isnan(tBruta)) tBruta = 0.0f;
+    }
     
     if (vibDado.valido) {
       // Remove DC (gravidade + bias) de cada eixo via EMA lenta
@@ -193,6 +206,10 @@ void loop() {
 
       // RMS apenas da energia dinamica (AC)
       vBruta = sqrt((axAC * axAC) + (ayAC * ayAC) + (azAC * azAC));
+
+      // Rejeita outliers por Z-Score
+      vBruta = outlierVib.filtrar(vBruta);
+      if (isnan(vBruta)) vBruta = 0.0f;
     }
 
     // Aplica filtro digital as leituras brutas

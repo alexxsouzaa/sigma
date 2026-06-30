@@ -188,15 +188,19 @@ Entregas
 
 ## T012 — Detecção de Outliers
 
+Status: Em andamento
+
 Objetivo
 
 Eliminar leituras inválidas.
 
 Entregas
 
-* Limites físicos
-* Z-Score
-* Descarte automático
+* Limites físicos (temperatura -55..125°C, vibração 0..escalaG)
+* Z-Score com algoritmo online de Welford (O(1) por amostra)
+* Rejeição automática com fallback para 0.0f
+* Limiar Z-Score configurável (padrão 3.5 sigma)
+* Bootstrap de 10 amostras antes de ativar Z-Score
 
 ---
 
