@@ -188,7 +188,7 @@ Entregas
 
 ## T012 — Detecção de Outliers
 
-Status: Em andamento
+Status: Concluído
 
 Objetivo
 

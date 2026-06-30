@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.8.0
-//  Codename   : Deteccao de Outliers
+//  Versao     : 0.1.9.0
+//  Codename   : Qualidade dos Sensores
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -39,6 +39,7 @@
 #include "services/CalibrationService.h"
 #include "services/filter/DigitalFilter.h"
 #include "services/filter/OutlierFilter.h"
+#include "services/SensorQualityService.h"
 
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
@@ -61,6 +62,7 @@ DigitalFilter filtroTemp;
 DigitalFilter filtroVib;
 OutlierFilter outlierTemp;
 OutlierFilter outlierVib;
+SensorQualityService sensorQuality;
 
 CommandHandler     cmdHandler;
 
@@ -188,11 +190,13 @@ void loop() {
     float tBruta = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;
     float vBruta = 0.0f;
 
+    sensorQuality.atualizarTemp(tempDado.valido);
     if (tempDado.valido) {
       tBruta = outlierTemp.filtrar(tBruta);
       if (isnan(tBruta)) tBruta = 0.0f;
     }
     
+    sensorQuality.atualizarVib(vibDado.valido);
     if (vibDado.valido) {
       // Remove DC (gravidade + bias) de cada eixo via EMA lenta
       // para que o RMS reflita apenas a componente vibratoria
@@ -257,7 +261,9 @@ void loop() {
     // 4. Extracao sob demanda da API (Regressao Linear + Medias)
     AnalyticsResult res = analytics.getLatestResult();
 
+    SensorQualityReport qRel = sensorQuality.obterRelatorio();
+
     // 5. Renderizacao Camada UI conectada a API
-    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm, res);
+    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm, res, qRel);
   }
 }

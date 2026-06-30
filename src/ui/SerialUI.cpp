@@ -5,12 +5,13 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.8.0
-//  Codename   : Deteccao de Outliers
+//  Versao     : 0.1.9.0
+//  Codename   : Qualidade dos Sensores
 //  Data       : 2026-06-27
 // =============================================================
 
 #include "SerialUI.h"
+#include "../services/SensorQualityService.h"
 #include <esp_task_wdt.h>
 
 void SerialUI::begin(uint32_t baudRate) {
@@ -116,7 +117,8 @@ void SerialUI::imprimirErroFatal(const char* erro, const char* acao) {
 // =============================================================
 void SerialUI::imprimirRelatorio(uint32_t tempoMs, float temp, float vib, float horas, 
                                  float score, const char* clHealth, const char* clAlarme,
-                                 const AnalyticsResult& analytics) {
+                                 const AnalyticsResult& analytics,
+                                 const SensorQualityReport& qual) {
   Serial.println(F(LINHA_SUB));
   Serial.print(F("  Timestamp       : ")); Serial.print(tempoMs); Serial.println(F(" ms"));
   Serial.println(F(LINHA_SUB));
@@ -128,6 +130,27 @@ void SerialUI::imprimirRelatorio(uint32_t tempoMs, float temp, float vib, float 
   Serial.print(F("  Health Score    : ")); Serial.print(score, 1); 
   Serial.print(F(" % (")); Serial.print(clHealth); Serial.println(F(")"));
   Serial.print(F("  Alarme Atual    : ")); Serial.println(clAlarme);
+
+  // Qualidade dos Sensores (T013)
+  Serial.print(F("  Qual. Sensor    : Temp "));
+  Serial.print(qual.temp.confianca);
+  Serial.print(F("% ("));
+  if (qual.temp.falhasConsec > 0) {
+    if (qual.temp.confianca == 0) Serial.print(F("FALHA"));
+    else Serial.print(F("DEGRADADO"));
+  } else {
+    Serial.print(F("NORMAL"));
+  }
+  Serial.print(F(") | Vib "));
+  Serial.print(qual.vib.confianca);
+  Serial.print(F("% ("));
+  if (qual.vib.falhasConsec > 0) {
+    if (qual.vib.confianca == 0) Serial.print(F("FALHA"));
+    else Serial.print(F("DEGRADADO"));
+  } else {
+    Serial.print(F("NORMAL"));
+  }
+  Serial.println(F(")"));
 
   // Analise Preditiva (Consumindo a API Analytics)
   Serial.println(F(LINHA_SUB));
@@ -144,7 +167,7 @@ void SerialUI::imprimirRelatorio(uint32_t tempoMs, float temp, float vib, float 
   Serial.print(analytics.vibrationTrend, 5); Serial.println(F(" g/ciclo"));
   
   Serial.print(F("  Anomalia Prev.  : "));
-  Serial.println(analytics.anomalyDetected ? F("SIM (Alerta em histórico)") : F("NAO (Estável)"));
+  Serial.println(analytics.anomalyDetected ? F("SIM (Alerta em histórico)") : F("NAO (Estavel)"));
   
   Serial.println(F(LINHA_SUB));
   Serial.println();

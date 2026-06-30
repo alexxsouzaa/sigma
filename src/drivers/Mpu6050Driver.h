@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.8.0
-//  Codename   : Deteccao de Outliers
+//  Versao     : 0.1.9.0
+//  Codename   : Qualidade dos Sensores
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -22,6 +22,7 @@ struct Mpu6050Data {
   float ax;     // (g) Aceleracao X (com offset aplicado)
   float ay;     // (g) Aceleracao Y (com offset aplicado)
   float az;     // (g) Aceleracao Z (com offset aplicado)
+  float temp;   // (C) Temperatura interna do chip MPU6050
   bool  valido; // true se leitura foi bem-sucedida
 };
 

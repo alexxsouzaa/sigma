@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.8.0
-//  Codename   : Deteccao de Outliers
+//  Versao     : 0.1.9.0
+//  Codename   : Qualidade dos Sensores
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -53,15 +53,16 @@ void Mpu6050Driver::configurarEscala(int escalaG) {
 //  Retorno  : Struct Mpu6050Data com dados liquidos em g.
 // =============================================================
 Mpu6050Data Mpu6050Driver::lerAceleracao(float offX, float offY, float offZ) {
-  Mpu6050Data dado = { 0.0f, 0.0f, 0.0f, false };
+  Mpu6050Data dado = { 0.0f, 0.0f, 0.0f, 0.0f, false };
   sensors_event_t accel, gyro, temp;
 
   if (_mpu.getEvent(&accel, &gyro, &temp)) {
     dado.ax = (accel.acceleration.x / 9.81f) - offX;
     dado.ay = (accel.acceleration.y / 9.81f) - offY;
     dado.az = (accel.acceleration.z / 9.81f) - offZ;
+    dado.temp = temp.temperature;
     dado.valido = true;
   }
-  
+
   return dado;
 }
