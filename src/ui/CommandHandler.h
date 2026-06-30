@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.5
-//  Codename   : Calibracao Nao-Bloqueante Fix
+//  Versao     : 0.1.7.6
+//  Codename   : Pausa Monitoramento Calibracao
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -47,4 +47,12 @@ struct CommandContext {
 class CommandHandler {
 public:
   void processar(CommandContext& ctx);
+  bool isCalibrating() const { return _calEstado != 0; }
+
+private:
+  uint8_t  _calEstado = 0;  // 0=IDLE, 1=CONFIRM, 2=SAMPLING, 3=DONE
+  uint8_t  _calTent   = 0;
+  uint32_t _calTimer  = 0;
+  uint32_t _calSegTm  = 0;
+  uint8_t  _calSegR   = 0;
 };

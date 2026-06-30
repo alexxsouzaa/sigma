@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.5
-//  Codename   : Calibracao Nao-Bloqueante Fix
+//  Versao     : 0.1.7.6
+//  Codename   : Pausa Monitoramento Calibracao
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -157,6 +157,9 @@ void loop() {
 
   // Despacha para o modulo UI encarregado
   cmdHandler.processar(cmdCtx);
+
+  // Se calibracao estiver ativa, nao imprime estatisticas
+  if (cmdHandler.isCalibrating()) return;
 
   // Tratamento de comandos na UI poderia ser acionado aqui:
   // if (Serial.available()) processarComandos();
