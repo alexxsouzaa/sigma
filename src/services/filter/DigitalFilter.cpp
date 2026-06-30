@@ -6,8 +6,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.11.0
-//  Codename   : Historico de Eventos
+//  Versao     : 0.1.12.0
+//  Codename   : Multitarefa SENSOR
 //  Data       : 2026-06-29
 // =============================================================
 

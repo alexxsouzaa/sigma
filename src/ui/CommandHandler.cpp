@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.11.0
-//  Codename   : Historico de Eventos
+//  Versao     : 0.1.12.0
+//  Codename   : Multitarefa SENSOR
 //  Data       : 2026-06-29
 // =============================================================
 
@@ -192,7 +192,11 @@ void CommandHandler::processar(CommandContext& ctx) {
     }
 
     else if (_calEstado == CAL_SAMPLING) {
-      bool completo = ctx.srvCal.passo(ctx.driverVib);
+      bool completo = false;
+      if (xSemaphoreTake(ctx.i2cMutex, pdMS_TO_TICKS(100))) {
+        completo = ctx.srvCal.passo(ctx.driverVib);
+        xSemaphoreGive(ctx.i2cMutex);
+      }
       int prog = ctx.srvCal.obterProgresso();
       if (prog % 10 == 0 || completo) {
         ctx.ui.imprimirBarraProgresso(prog,
@@ -772,10 +776,16 @@ void CommandHandler::processar(CommandContext& ctx) {
         // Media de 10 leituras rapidas por amostra do baseline
         float somaRapida = 0.0f;
         for (int j = 0; j < 10; j++) {
-          Mpu6050Data bruto = ctx.driverVib.lerAceleracao(
-            ctx.calData.offsetAX,
-            ctx.calData.offsetAY,
-            ctx.calData.offsetAZ);
+          Mpu6050Data bruto;
+          if (xSemaphoreTake(ctx.i2cMutex, pdMS_TO_TICKS(100))) {
+            bruto = ctx.driverVib.lerAceleracao(
+              ctx.calData.offsetAX,
+              ctx.calData.offsetAY,
+              ctx.calData.offsetAZ);
+            xSemaphoreGive(ctx.i2cMutex);
+          } else {
+            bruto.valido = false;
+          }
           if (bruto.valido) {
             somaRapida += sqrt(
               (bruto.ax * bruto.ax) +

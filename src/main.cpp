@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.11.0
-//  Codename   : Historico de Eventos
+//  Versao     : 0.1.12.0
+//  Codename   : Multitarefa SENSOR
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -43,6 +43,10 @@
 #include "services/event/EventTypes.h"
 #include "services/event/EventManager.h"
 #include "services/event/EventHistory.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include <freertos/queue.h>
 
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
@@ -74,6 +78,19 @@ CommandHandler     cmdHandler;
 CalibrationService srvCal;
 
 // =============================================================
+//  FreeRTOS — Fila e Mutex (Fase 1 — Multitarefa SENSOR)
+// =============================================================
+struct SensorQueueItem {
+  Ds18b20Data temp;
+  Mpu6050Data vib;
+  uint32_t timestamp;
+};
+
+xQueueHandle      sensorQueue;
+SemaphoreHandle_t i2cMutex;
+TaskHandle_t      sensorTaskHandle;
+
+// =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
 // =============================================================
 NvsCalibrationData calData;
@@ -86,7 +103,6 @@ static float _dcX = 0.0f;
 static float _dcY = 0.0f;
 static float _dcZ = 0.0f;
 
-uint32_t ultimaLeituraMs = 0;
 uint32_t inicioSistemaMs = 0;
 
 // =============================================================
@@ -103,6 +119,45 @@ static void onEvento(EventType tipo, const EventoDados& dados) {
   Serial.print(dados.valorSecundario, 3);
   Serial.println(F(""));
   #endif
+}
+
+// =============================================================
+//  TAREFA: sensorTask (Nucleo 1, prioridade 3)
+//  Le sensores a cada 500ms e envia para fila.
+//  MPU6050 (I2C) protegido por mutex.
+//  DS18B20 (OneWire) nao precisa de mutex.
+// =============================================================
+static void sensorTask(void* pvParams) {
+  (void)pvParams;
+  uint32_t ultLeitura = 0;
+  while (true) {
+    uint32_t agora = millis();
+    if (agora - ultLeitura >= 500) {
+      ultLeitura = agora;
+
+      SensorQueueItem item;
+      item.timestamp = agora;
+
+      // Le temperatura (OneWire)
+      item.temp = driverTemp.lerTemperatura();
+
+      // Le vibracao (I2C) com mutex
+      if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        item.vib = driverVib.lerAceleracao(
+          calData.offsetAX,
+          calData.offsetAY,
+          calData.offsetAZ);
+        xSemaphoreGive(i2cMutex);
+      } else {
+        item.vib.valido = false;
+      }
+
+      // Envia para fila (overwrite — mantem sempre o dado mais
+      // recente, descartando leituras antigas nao consumidas)
+      xQueueOverwrite(sensorQueue, &item);
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
 }
 
 // =============================================================
@@ -171,6 +226,28 @@ void setup() {
   }
   ui.imprimirMensagem("OK", "Barramento de eventos inicializado.");
 
+  // Criacao do mutex I2C e fila de sensores (Fase 1)
+  i2cMutex   = xSemaphoreCreateMutex();
+  sensorQueue = xQueueCreate(1, sizeof(SensorQueueItem));
+  
+  if (i2cMutex == NULL || sensorQueue == NULL) {
+    ui.imprimirErroFatal("Falha ao criar recursos FreeRTOS.",
+                         "RAM insuficiente.");
+    esp_task_wdt_delete(NULL);
+    while (true) delay(1000);
+  }
+  
+  // Cria a tarefa de leitura de sensores no nucleo 1
+  if (xTaskCreatePinnedToCore(
+        sensorTask, "SensorTask", 4096, NULL, 3,
+        &sensorTaskHandle, 1) != pdPASS) {
+    ui.imprimirErroFatal("Falha ao criar SensorTask.",
+                         "RAM insuficiente.");
+    esp_task_wdt_delete(NULL);
+    while (true) delay(1000);
+  }
+  ui.imprimirMensagem("OK", "SensorTask criada (nucleo 1, prioridade 3).");
+
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
 }
@@ -180,7 +257,6 @@ void setup() {
 // =============================================================
 void loop() {
   esp_task_wdt_reset();
-  uint32_t agora = millis();
 
   // Instancia dinamica do contexto contendo apenas as referencias
   CommandContext cmdCtx = {
@@ -189,7 +265,8 @@ void loop() {
     .nvsCal = nvsCal,       .calData = calData,
     .nvsCfg = nvsCfg,       .cfgData = cfgData,
     .driverVib = driverVib, .srvCal  = srvCal, 
-    .ui = ui,               .inicioSistemaMs = inicioSistemaMs
+    .ui = ui,               .i2cMutex = i2cMutex,
+    .inicioSistemaMs = inicioSistemaMs
   };
 
   // Despacha para o modulo UI encarregado
@@ -198,20 +275,23 @@ void loop() {
   // Se calibracao estiver ativa, nao imprime estatisticas
   if (cmdHandler.isCalibrating()) return;
 
-  // Tratamento de comandos na UI poderia ser acionado aqui:
-  // if (Serial.available()) processarComandos();
+  // Tenta receber dados do SensorTask (nao-bloqueante)
+  SensorQueueItem item;
+  if (xQueueReceive(sensorQueue, &item, 0) != pdTRUE) {
+    eventBus.processarFila();
+    return;
+  }
 
-  // Ciclo de leitura (500ms)
-  if (agora - ultimaLeituraMs >= 500) {
-    ultimaLeituraMs = agora;
+  {
+    uint32_t agora = item.timestamp;
 
     // Atualiza horimetro em RAM
     float horasRodando = (float)(agora - inicioSistemaMs) / 3600000.0f;
     float horasTotais  = horData.horimetro + horasRodando;
 
-    // Leitura Camada 2
-    Ds18b20Data tempDado = driverTemp.lerTemperatura();
-    Mpu6050Data vibDado  = driverVib.lerAceleracao(calData.offsetAX, calData.offsetAY, calData.offsetAZ);
+    // Dados recebidos do SensorTask (nucleo 1)
+    Ds18b20Data tempDado = item.temp;
+    Mpu6050Data vibDado  = item.vib;
 
     // Validacao estrita e filtragem digital
     float tBruta = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;

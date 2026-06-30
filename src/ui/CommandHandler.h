@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.11.0
-//  Codename   : Historico de Eventos
+//  Versao     : 0.1.12.0
+//  Codename   : Multitarefa SENSOR
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -19,6 +19,8 @@
 #include "../drivers/Mpu6050Driver.h"
 #include "../services/CalibrationService.h"
 #include "SerialUI.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // -------------------------
 //  Contexto de Comandos
@@ -35,8 +37,9 @@ struct CommandContext {
   NvsConfig&          nvsCfg;
   NvsConfigData&      cfgData;
   Mpu6050Driver&      driverVib;
-  CalibrationService& srvCal; // <--- Injetado
+  CalibrationService& srvCal;
   SerialUI&           ui;
+  SemaphoreHandle_t   i2cMutex;
   uint32_t&           inicioSistemaMs;
 };
 
