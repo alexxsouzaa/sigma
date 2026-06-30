@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.12.0
-//  Codename   : Multitarefa SENSOR
+//  Versao     : 0.1.13.0
+//  Codename   : Multitarefa EVENT
 //  Data       : 2026-06-30
 
 // =============================================================
@@ -16,8 +16,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.12.0"
-#define SIGMA_CODENAME         "Multitarefa SENSOR"
+#define SIGMA_FIRMWARE_VERSION "0.1.13.0"
+#define SIGMA_CODENAME         "Multitarefa EVENT"
 
 // -------------------------
 //  Analytics Engine

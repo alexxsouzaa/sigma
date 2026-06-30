@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.12.0
-//  Codename   : Multitarefa SENSOR
+//  Versao     : 0.1.13.0
+//  Codename   : Multitarefa EVENT
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -89,6 +89,7 @@ struct SensorQueueItem {
 xQueueHandle      sensorQueue;
 SemaphoreHandle_t i2cMutex;
 TaskHandle_t      sensorTaskHandle;
+TaskHandle_t      eventTaskHandle;
 
 // =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
@@ -156,6 +157,20 @@ static void sensorTask(void* pvParams) {
       // recente, descartando leituras antigas nao consumidas)
       xQueueOverwrite(sensorQueue, &item);
     }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+// =============================================================
+//  TAREFA: eventTask (Nucleo 1, prioridade 2)
+//  Processa fila de eventos a cada 50ms.
+//  Desacopla o dispacho de eventos do barramento do ciclo
+//  principal de leitura/processamento.
+// =============================================================
+static void eventTask(void* pvParams) {
+  (void)pvParams;
+  while (true) {
+    eventBus.processarFila();
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -248,6 +263,17 @@ void setup() {
   }
   ui.imprimirMensagem("OK", "SensorTask criada (nucleo 1, prioridade 3).");
 
+  // Cria a tarefa de processamento de eventos no nucleo 1
+  if (xTaskCreatePinnedToCore(
+        eventTask, "EventTask", 3072, NULL, 2,
+        &eventTaskHandle, 1) != pdPASS) {
+    ui.imprimirErroFatal("Falha ao criar EventTask.",
+                         "RAM insuficiente.");
+    esp_task_wdt_delete(NULL);
+    while (true) delay(1000);
+  }
+  ui.imprimirMensagem("OK", "EventTask criada (nucleo 1, prioridade 2).");
+
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
 }
@@ -278,7 +304,6 @@ void loop() {
   // Tenta receber dados do SensorTask (nao-bloqueante)
   SensorQueueItem item;
   if (xQueueReceive(sensorQueue, &item, 0) != pdTRUE) {
-    eventBus.processarFila();
     return;
   }
 
@@ -303,12 +328,12 @@ void loop() {
       if (isnan(tBruta)) {
         tBruta = 0.0f;
         EventoDados ev = { tempDado.temperaturaCelsius, 0.0f, 0, 0 };
-        eventBus.disparar(EventType::OUTLIER_TEMP, ev);
+        eventBus.enfileirar(EventType::OUTLIER_TEMP, ev);
       }
     }
     {
       EventoDados ev = { tBruta, 0.0f, 0, (uint8_t)(tempDado.valido ? 0 : 1) };
-      eventBus.disparar(EventType::TEMP_LEITURA, ev);
+      eventBus.enfileirar(EventType::TEMP_LEITURA, ev);
     }
     
     sensorQuality.atualizarVib(vibDado.valido);
@@ -331,12 +356,12 @@ void loop() {
       if (isnan(vBruta)) {
         vBruta = 0.0f;
         EventoDados ev = { 0.0f, 0.0f, 1, 0 };
-        eventBus.disparar(EventType::OUTLIER_VIB, ev);
+        eventBus.enfileirar(EventType::OUTLIER_VIB, ev);
       }
     }
     {
       EventoDados ev = { vBruta, 0.0f, 1, 0 };
-      eventBus.disparar(EventType::VIB_LEITURA, ev);
+      eventBus.enfileirar(EventType::VIB_LEITURA, ev);
     }
 
     // Aplica filtro digital as leituras brutas
@@ -372,12 +397,12 @@ void loop() {
     // Dispara eventos de alarme (T014)
     if (almCode != AlarmLevel::NORMAL) {
       EventoDados ev = { tAtual, vAtual, 0, (uint8_t)almCode };
-      eventBus.disparar(EventType::TEMP_ALARME, ev);
-      eventBus.disparar(EventType::VIB_ALARME, ev);
+      eventBus.enfileirar(EventType::TEMP_ALARME, ev);
+      eventBus.enfileirar(EventType::VIB_ALARME, ev);
     }
     {
       EventoDados ev = { score, 0.0f, 2, 0 };
-      eventBus.disparar(EventType::SAUDE_ALTERADA, ev);
+      eventBus.enfileirar(EventType::SAUDE_ALTERADA, ev);
     }
 
     AnalyticsSample novaAmostra = {
@@ -400,7 +425,4 @@ void loop() {
     // 5. Renderizacao Camada UI conectada a API
     ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm, res, qRel);
   }
-
-  // Processa eventos enfileirados (T014)
-  eventBus.processarFila();
 }

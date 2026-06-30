@@ -6,8 +6,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.12.0
-//  Codename   : Multitarefa SENSOR
+//  Versao     : 0.1.13.0
+//  Codename   : Multitarefa EVENT
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 #include "EventTypes.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // -------------------------
 //  Callback de Evento
@@ -69,4 +71,5 @@ private:
   Assinante   _assinantes[MAX_ASSINANTES];
   EventoFila  _fila[MAX_EVENTOS_FILA];
   uint8_t     _numAssinantes;
+  SemaphoreHandle_t _filaMutex;
 };

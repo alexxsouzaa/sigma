@@ -6,8 +6,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.12.0
-//  Codename   : Multitarefa SENSOR
+//  Versao     : 0.1.13.0
+//  Codename   : Multitarefa EVENT
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -25,6 +25,7 @@ EventManager::EventManager() {
   for (uint8_t i = 0; i < MAX_EVENTOS_FILA; i++) {
     _fila[i].ocupado = false;
   }
+  _filaMutex = xSemaphoreCreateMutex();
 }
 
 // =============================================================
@@ -59,14 +60,19 @@ void EventManager::disparar(EventType tipo, const EventoDados& dados) {
 //  Enfileira evento para processamento posterior.
 // =============================================================
 bool EventManager::enfileirar(EventType tipo, const EventoDados& dados) {
-  for (uint8_t i = 0; i < MAX_EVENTOS_FILA; i++) {
-    if (_fila[i].ocupado) continue;
-    _fila[i].tipo   = tipo;
-    _fila[i].dados  = dados;
-    _fila[i].ocupado = true;
-    return true;
+  bool ok = false;
+  if (xSemaphoreTake(_filaMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+    for (uint8_t i = 0; i < MAX_EVENTOS_FILA; i++) {
+      if (_fila[i].ocupado) continue;
+      _fila[i].tipo   = tipo;
+      _fila[i].dados  = dados;
+      _fila[i].ocupado = true;
+      ok = true;
+      break;
+    }
+    xSemaphoreGive(_filaMutex);
   }
-  return false;
+  return ok;
 }
 
 // =============================================================
@@ -74,10 +80,24 @@ bool EventManager::enfileirar(EventType tipo, const EventoDados& dados) {
 //  Processa todos os eventos enfileirados em ordem FIFO.
 // =============================================================
 void EventManager::processarFila() {
-  for (uint8_t i = 0; i < MAX_EVENTOS_FILA; i++) {
-    if (!_fila[i].ocupado) continue;
-    disparar(_fila[i].tipo, _fila[i].dados);
-    _fila[i].ocupado = false;
+  // Snapshot da fila sob mutex para minimizar o tempo
+  // de bloqueio — a iteracao chama callbacks que podem
+  // levar mais tempo que o toleravel para o produtor.
+  EventoFila snap[MAX_EVENTOS_FILA];
+  uint8_t n = 0;
+
+  if (xSemaphoreTake(_filaMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    for (uint8_t i = 0; i < MAX_EVENTOS_FILA; i++) {
+      if (!_fila[i].ocupado) continue;
+      snap[n] = _fila[i];
+      _fila[i].ocupado = false;
+      n++;
+    }
+    xSemaphoreGive(_filaMutex);
+  }
+
+  for (uint8_t i = 0; i < n; i++) {
+    disparar(snap[i].tipo, snap[i].dados);
   }
 }
 
