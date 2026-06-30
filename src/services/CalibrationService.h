@@ -5,17 +5,15 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.2
-//  Codename   : Calibracao Robusta I2C
-//  Data       : 2026-06-28
+//  Versao     : 0.1.7.3
+//  Codename   : Calibracao Nao-Bloqueante
+//  Data       : 2026-06-29
 // =============================================================
 
 #pragma once
 
+#include <stdint.h>
 #include "../drivers/Mpu6050Driver.h"
-
-// Callback para atualizacao de progresso sem acoplar a UI
-typedef void (*ProgressCallback)(void* ctx, int atual, int total);
 
 // -------------------------
 //  Contrato de Saida
@@ -29,11 +27,29 @@ struct CalibrationResult {
 
 // =============================================================
 //  CLASSE: CalibrationService
-//  Isola a regra de negocio da coleta de ponto zero.
+//  Estado interno para calibracao nao-bloqueante.
+//  Uso: chamar iniciar(), depois passo() a cada ciclo ate
+//       que retorne true. Entao obterResultado().
 // =============================================================
 class CalibrationService {
 public:
-  CalibrationResult executar(Mpu6050Driver& driver, 
-                             ProgressCallback cb, 
-                             void* context);
+  static const int TOTAL_AMOSTRAS = 200;
+  static const int INTERVALO_MS   = 25;
+
+  CalibrationService();
+
+  void iniciar();
+  bool passo(Mpu6050Driver& driver);
+  bool estaAtivo() const;
+  int  obterProgresso() const;
+  CalibrationResult obterResultado() const;
+
+private:
+  int     _indice;
+  float   _somaX;
+  float   _somaY;
+  float   _somaZ;
+  int     _amostrasValidas;
+  uint32_t _ultimoMs;
+  bool    _ativo;
 };

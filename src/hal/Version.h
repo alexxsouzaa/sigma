@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.2
-//  Codename   : Calibracao Robusta I2C
+//  Versao     : 0.1.7.3
+//  Codename   : Calibracao Nao-Bloqueante
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -15,8 +15,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.7.2"
-#define SIGMA_CODENAME         "Calibracao Robusta I2C"
+#define SIGMA_FIRMWARE_VERSION "0.1.7.3"
+#define SIGMA_CODENAME         "Calibracao Nao-Bloqueante"
 
 // -------------------------
 //  Analytics Engine

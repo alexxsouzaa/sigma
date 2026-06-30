@@ -1,59 +1,114 @@
 // =============================================================
 //  Project SIGMA
 //  Arquivo    : CalibrationService.cpp
-//  Descricao  : Implementacao do calculo de offsets.
+//  Descricao  : Implementacao da calibracao nao-bloqueante.
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.2
-//  Codename   : Calibracao Robusta I2C
-//  Data       : 2026-06-28
+//  Versao     : 0.1.7.3
+//  Codename   : Calibracao Nao-Bloqueante
+//  Data       : 2026-06-29
 // =============================================================
 
 #include "CalibrationService.h"
 #include <Arduino.h>
-#include <esp_task_wdt.h>
 
 // =============================================================
-//  FUNCAO: executar
-//  Coleta 200 amostras, calcula a media e devolve os offsets.
+//  CONSTRUTOR
 // =============================================================
-CalibrationResult CalibrationService::executar(Mpu6050Driver& driver, 
-                                               ProgressCallback cb, 
-                                               void* context) {
-  CalibrationResult res = { 0.0f, 0.0f, 0.0f, false };
-  float somaX = 0.0f, somaY = 0.0f, somaZ = 0.0f;
-  int amostrasValidas = 0;
+CalibrationService::CalibrationService() {
+  _indice = 0;
+  _somaX = 0.0f;
+  _somaY = 0.0f;
+  _somaZ = 0.0f;
+  _amostrasValidas = 0;
+  _ultimoMs = 0;
+  _ativo = false;
+}
 
-  for (int i = 1; i <= 200; i++) {
-    esp_task_wdt_reset(); // Evita reset durante operacao longa
-    
-    // Leitura bruta (sem offsets aplicados) com ate 3 tentativas
-    Mpu6050Data bruto = { 0.0f, 0.0f, 0.0f, false };
-    for (int tent = 0; tent < 3 && !bruto.valido; tent++) {
-      bruto = driver.lerAceleracao(0.0f, 0.0f, 0.0f);
-      if (!bruto.valido) delay(10);
+// =============================================================
+//  FUNCAO: iniciar
+//  Reseta acumuladores e marca calibracao como ativa.
+// =============================================================
+void CalibrationService::iniciar() {
+  _indice = 0;
+  _somaX = 0.0f;
+  _somaY = 0.0f;
+  _somaZ = 0.0f;
+  _amostrasValidas = 0;
+  _ultimoMs = 0;
+  _ativo = true;
+}
+
+// =============================================================
+//  FUNCAO: passo
+//  Le uma amostra do sensor se o intervalo minimo tiver
+//  passado. Retorna true quando todas as 200 amostras
+//  forem coletadas. Nunca bloqueia.
+// =============================================================
+bool CalibrationService::passo(Mpu6050Driver& driver) {
+  if (!_ativo) return true;
+
+  uint32_t agora = millis();
+  if (agora - _ultimoMs < INTERVALO_MS) return false;
+
+  _ultimoMs = agora;
+
+  // Leitura bruta (sem offsets) com ate 3 tentativas
+  Mpu6050Data bruto = { 0.0f, 0.0f, 0.0f, false };
+  for (int tent = 0; tent < 3 && !bruto.valido; tent++) {
+    bruto = driver.lerAceleracao(0.0f, 0.0f, 0.0f);
+    if (!bruto.valido) {
+      // Aguarda o proximo ciclo para tentar novamente
+      _ultimoMs = millis();
+      return false;
     }
-    
-    if (bruto.valido) {
-      somaX += bruto.ax;
-      somaY += bruto.ay;
-      somaZ += bruto.az;
-      amostrasValidas++;
-    }
-    
-    // Aciona a UI a cada 10 iteracoes ou no termino
-    if (cb != nullptr && (i % 10 == 0 || i == 200)) {
-      cb(context, i, 200);
-    }
-    
-    delay(20); // Intervalo entre leituras para nao saturar o barramento
   }
 
-  if (amostrasValidas > 0) {
-    res.offsetAX = somaX / amostrasValidas;
-    res.offsetAY = somaY / amostrasValidas;
-    res.offsetAZ = somaZ / amostrasValidas;
+  if (bruto.valido) {
+    _somaX += bruto.ax;
+    _somaY += bruto.ay;
+    _somaZ += bruto.az;
+    _amostrasValidas++;
+  }
+
+  _indice++;
+
+  if (_indice >= TOTAL_AMOSTRAS) {
+    _ativo = false;
+    return true;
+  }
+
+  return false;
+}
+
+// =============================================================
+//  FUNCAO: estaAtivo
+// =============================================================
+bool CalibrationService::estaAtivo() const {
+  return _ativo;
+}
+
+// =============================================================
+//  FUNCAO: obterProgresso
+//  Retorna o numero de amostras coletadas (0..200).
+// =============================================================
+int CalibrationService::obterProgresso() const {
+  return _indice;
+}
+
+// =============================================================
+//  FUNCAO: obterResultado
+//  Calcula as medias das amostras validas coletadas.
+//  Chame apenas depois que passo() retornar true.
+// =============================================================
+CalibrationResult CalibrationService::obterResultado() const {
+  CalibrationResult res = { 0.0f, 0.0f, 0.0f, false };
+
+  if (_amostrasValidas > 0) {
+    res.offsetAX = _somaX / _amostrasValidas;
+    res.offsetAY = _somaY / _amostrasValidas;
+    res.offsetAZ = _somaZ / _amostrasValidas;
     res.sucesso  = true;
   }
 

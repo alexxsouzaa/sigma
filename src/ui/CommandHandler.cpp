@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.2
-//  Codename   : Calibracao Robusta I2C
+//  Versao     : 0.1.7.3
+//  Codename   : Calibracao Nao-Bloqueante
 //  Data       : 2026-06-29
 // =============================================================
 //
@@ -52,21 +52,6 @@ static const uint8_t MAX_RECALIBRACOES = 3;
 // Tamanho maximo do buffer de leitura serial.
 // Suficiente para "RESET" (5) e valores float como "5.00" (4).
 static const uint8_t SERIAL_BUF_SIZE = 8;
-
-// =============================================================
-//  FUNCAO ESTATICA: cbProgresso
-//  Adaptador de callback para injetar a UI na amostragem.
-//  Chamado pelo CalibrationService a cada amostra coletada.
-// -------------------------------------------------------------
-//  Parametros:
-//    context : Ponteiro opaco para CommandContext.
-//    atual   : Numero da amostra atual.
-//    total   : Total de amostras previstas.
-// =============================================================
-static void cbProgresso(void* context, int atual, int total) {
-  CommandContext* ctx = static_cast<CommandContext*>(context);
-  ctx->ui.imprimirBarraProgresso(atual, total);
-}
 
 // =============================================================
 //  FUNCAO ESTATICA: lerLinhaSerial
@@ -244,20 +229,250 @@ void CommandHandler::processar(CommandContext& ctx) {
 
     // ---------------------------------------------------------
     //  [C] Recalibrar Acelerometro (Ponto Zero)
-    //  Fluxo completo definido no SUS, Secao 13.
-    //  Limite de MAX_RECALIBRACOES tentativas consecutivas para
-    //  evitar que o sistema fique indefinidamente fora do
-    //  monitoramento por pressão repetida de [R].
+    //  Fluxo nao-bloqueante com estado interno.
+    //  Retorna ao loop() a cada passo — sem delay().
+    //  SUS Secao 13, refatorado v0.1.7.3.
     // ---------------------------------------------------------
     case 'C': {
-      uint8_t tentativas = 0;
-      bool    recalibrar = true;
+      // Estado interno entre chamadas (persiste entre ciclos)
+      static enum : uint8_t {
+        CAL_IDLE, CAL_CONFIRM, CAL_SAMPLING, CAL_DONE
+      } estado = CAL_IDLE;
+      static uint8_t  tentativas = 0;
+      static uint32_t timerInicio = 0;
+      static uint32_t ultSeg = 0;
+      static uint8_t  segRest = 0;
+      static bool     recalibrar = false;
 
-      while (recalibrar && tentativas < MAX_RECALIBRACOES) {
-        recalibrar = false;
+      // Garante flush do buffer na primeira entrada
+      if (estado == CAL_IDLE) {
+        while (Serial.available()) Serial.read();
+        tentativas = 0;
+        recalibrar = true;
+      }
+
+      // =======================================================
+      //  LACO PRINCIPAL (nao-bloqueante)
+      //  Enquanto houver tentativas, avanca um estado por ciclo.
+      // =======================================================
+      if (!recalibrar || tentativas >= MAX_RECALIBRACOES) {
+        if (tentativas >= MAX_RECALIBRACOES && recalibrar) {
+          Serial.println(F(""));
+          Serial.println(F(
+            "  [WARN] Limite de recalibracoes atingido."));
+          Serial.println(F(
+            "  [MENU] Monitoramento retomado."));
+          Serial.println(F(""));
+        }
+        estado = CAL_IDLE;
+        break;
+      }
+
+      switch (estado) {
+
+      // -------------------------------------------------------
+      //  FASE: Aguardar confirmacao do usuario (30s timeout)
+      // -------------------------------------------------------
+      case CAL_CONFIRM: {
+        uint32_t agora = millis();
+        uint32_t delta = agora - timerInicio;
+
+        // Atualiza contagem regressiva a cada segundo
+        if (agora - ultSeg >= 1000) {
+          ultSeg = agora;
+          segRest--;
+          Serial.print(F("  Aguardando... tempo restante: "));
+          Serial.print(segRest);
+          Serial.print(F(" s   \r"));
+        }
+
+        if (delta >= 30000) {
+          Serial.println(F(""));
+          Serial.println(F(
+            "  [TIMEOUT] Confirmacao nao recebida. Cancelado."));
+          Serial.println(F(""));
+          recalibrar = false;
+          estado = CAL_IDLE;
+          break;
+        }
+
+        if (Serial.available() > 0) {
+          char r = toupper(Serial.read());
+          Serial.println(F(""));
+
+          if (r == 'S') {
+            Serial.println(F(
+              "  [INFO] Calibracao confirmada."));
+            Serial.println(F(""));
+            Serial.println(F(
+              "  [CAL] Iniciando calibracao de ponto zero."));
+            Serial.println(F(
+              "  [CAL] Mantenha o sensor PARADO e NIVELADO!"));
+            Serial.println(F(
+              "  [CAL] Coletando amostras..."));
+            ctx.srvCal.iniciar();
+            estado = CAL_SAMPLING;
+          } else if (r == 'N') {
+            Serial.println(F(
+              "  [INFO] Calibracao CANCELADA."));
+            Serial.println(F(""));
+            recalibrar = false;
+            estado = CAL_IDLE;
+          }
+        }
+        break;
+      }
+
+      // -------------------------------------------------------
+      //  FASE: Coleta de 200 amostras (nao-bloqueante)
+      // -------------------------------------------------------
+      case CAL_SAMPLING: {
+        bool completo = ctx.srvCal.passo(ctx.driverVib);
+
+        // Atualiza barra de progresso a cada 10 amostras
+        int prog = ctx.srvCal.obterProgresso();
+        if (prog % 10 == 0 || completo) {
+          ctx.ui.imprimirBarraProgresso(prog,
+            CalibrationService::TOTAL_AMOSTRAS);
+        }
+
+        if (completo) {
+          Serial.println(F(""));
+          CalibrationResult res = ctx.srvCal.obterResultado();
+
+          if (!res.sucesso) {
+            Serial.println(F(""));
+            Serial.println(F(
+              "  [ERRO] Falha na leitura do sensor."));
+            Serial.println(F(""));
+            recalibrar = false;
+            estado = CAL_IDLE;
+            break;
+          }
+
+          // Aplica e persiste os offsets
+          ctx.calData.offsetAX  = res.offsetAX;
+          ctx.calData.offsetAY  = res.offsetAY;
+          ctx.calData.offsetAZ  = res.offsetAZ;
+          ctx.calData.calibrado = true;
+          ctx.nvsCal.salvar(ctx.calData);
+
+          // Exibe resultado
+          Serial.println(F(
+            "  [CAL] Calibracao concluida com sucesso!"));
+          Serial.println(F(
+            "  [CAL] ------- Offsets Calculados -------"));
+          Serial.print(F("  [CAL]   Offset AX : "));
+          Serial.print(res.offsetAX, 5);
+          Serial.println(F(" g"));
+          Serial.print(F("  [CAL]   Offset AY : "));
+          Serial.print(res.offsetAY, 5);
+          Serial.println(F(" g"));
+          Serial.print(F("  [CAL]   Offset AZ : "));
+          Serial.print(res.offsetAZ, 5);
+          Serial.println(F(" g (inclui ~1g)"));
+          Serial.println(F(
+            "  [NVS] Offsets salvos (sigma_cal)."));
+          Serial.println(F(""));
+
+          // Menu pos-calibracao
+          while (Serial.available()) Serial.read();
+          Serial.println(F(
+            "+----------------------------------------------------------+"));
+          Serial.println(F(
+            "|  CALIBRACAO CONCLUIDA COM SUCESSO!                       |"));
+          Serial.println(F(
+            "|  [S] = SAIR ao monitoramento                             |"));
+          if (tentativas + 1 < MAX_RECALIBRACOES) {
+            Serial.println(F(
+              "|  [R] = RECALIBRAR novamente                              |"));
+          }
+          Serial.println(F(
+            "+----------------------------------------------------------+"));
+
+          timerInicio = millis();
+          ultSeg = millis();
+          segRest = 60;
+          Serial.print(F("  Aguardando... tempo restante: 60 s\r"));
+          estado = CAL_DONE;
+        }
+        break;
+      }
+
+      // -------------------------------------------------------
+      //  FASE: Aguardar S/R (60s timeout)
+      // -------------------------------------------------------
+      case CAL_DONE: {
+        uint32_t agora = millis();
+        uint32_t delta = agora - timerInicio;
+
+        if (agora - ultSeg >= 1000) {
+          ultSeg = agora;
+          segRest--;
+          Serial.print(F("  Aguardando... tempo restante: "));
+          Serial.print(segRest);
+          Serial.print(F(" s   \r"));
+        }
+
+        if (delta >= 60000) {
+          Serial.println(F(""));
+          Serial.println(F(
+            "  [TIMEOUT] Sem resposta. Monitoramento retomado."));
+          Serial.println(F(""));
+          recalibrar = false;
+          estado = CAL_IDLE;
+          break;
+        }
+
+        if (Serial.available() > 0) {
+          char r = toupper(Serial.read());
+          Serial.println(F(""));
+
+          if (r == 'S') {
+            Serial.println(F(
+              "  [MENU] Monitoramento retomado."));
+            Serial.println(F(""));
+            recalibrar = false;
+            estado = CAL_IDLE;
+          } else if (r == 'R' &&
+                     tentativas + 1 < MAX_RECALIBRACOES) {
+            Serial.println(F(
+              "  [MENU] Iniciando nova calibracao..."));
+            Serial.println(F(""));
+            tentativas++;
+            estado = CAL_CONFIRM;
+            timerInicio = millis();
+            ultSeg = millis();
+            segRest = 30;
+            // Reexibe menu de confirmacao
+            Serial.println(F(""));
+            Serial.println(F(
+              "  [CMD] Recalibracao solicitada."));
+            Serial.println(F(""));
+            Serial.println(F(
+              "+----------------------------------------------------------+"));
+            Serial.println(F(
+              "|  CONFIRMACAO NECESSARIA                                  |"));
+            Serial.println(F(
+              "|  Sensor deve estar PARADO e NIVELADO!                    |"));
+            Serial.println(F(
+              "|  [S] = CONFIRMAR  |  [N] = CANCELAR                     |"));
+            Serial.println(F(
+              "+----------------------------------------------------------+"));
+          }
+        }
+        break;
+      }
+
+      // -------------------------------------------------------
+      //  FASE: Inicial (primeira chamada)
+      // -------------------------------------------------------
+      default:
+      case CAL_IDLE: {
         tentativas++;
-
-        // --- Aviso de tentativa quando nao e a primeira ---
+        Serial.println(F(""));
+        Serial.println(F(
+          "  [CMD] Recalibracao solicitada. Monitoramento pausado."));
         if (tentativas > 1) {
           Serial.print(F("  [CAL] Tentativa "));
           Serial.print(tentativas);
@@ -265,11 +480,6 @@ void CommandHandler::processar(CommandContext& ctx) {
           Serial.print(MAX_RECALIBRACOES);
           Serial.println(F("."));
         }
-
-        // --- Confirmacao inicial ---
-        Serial.println(F(""));
-        Serial.println(F(
-          "  [CMD] Recalibracao solicitada. Monitoramento pausado."));
         Serial.println(F(""));
         Serial.println(F(
           "+----------------------------------------------------------+"));
@@ -282,137 +492,15 @@ void CommandHandler::processar(CommandContext& ctx) {
         Serial.println(F(
           "+----------------------------------------------------------+"));
 
-        if (!ctx.ui.aguardarConfirmacao(
-              "Calibracao confirmada.",
-              "Calibracao CANCELADA.",
-              30000)) {
-          break;
-        }
-
-        // --- Coleta de amostras ---
-        Serial.println(F(""));
-        Serial.println(F(
-          "  [CAL] Iniciando calibracao de ponto zero."));
-        Serial.println(F(
-          "  [CAL] Mantenha o sensor PARADO e NIVELADO!"));
-        Serial.println(F(
-          "  [CAL] Coletando amostras..."));
-
-        CalibrationResult res =
-          ctx.srvCal.executar(ctx.driverVib, cbProgresso, &ctx);
-
-        Serial.println(F(""));
-
-        if (!res.sucesso) {
-          Serial.println(F(
-            "  [ERRO] Falha na leitura do sensor durante calibracao."));
-          Serial.println(F(""));
-          break;
-        }
-
-        // --- Aplica e persiste os offsets ---
-        ctx.calData.offsetAX  = res.offsetAX;
-        ctx.calData.offsetAY  = res.offsetAY;
-        ctx.calData.offsetAZ  = res.offsetAZ;
-        ctx.calData.calibrado = true;
-        ctx.nvsCal.salvar(ctx.calData);
-
-        // --- Resultado conforme SUS, Secao 13 ---
-        Serial.println(F(
-          "  [CAL] Calibracao concluida com sucesso!"));
-        Serial.println(F(
-          "  [CAL] ------- Offsets Calculados -------"));
-        Serial.print(F("  [CAL]   Offset AX : "));
-        Serial.print(res.offsetAX, 5);
-        Serial.println(F(" g"));
-        Serial.print(F("  [CAL]   Offset AY : "));
-        Serial.print(res.offsetAY, 5);
-        Serial.println(F(" g"));
-        Serial.print(F("  [CAL]   Offset AZ : "));
-        Serial.print(res.offsetAZ, 5);
-        Serial.println(F(" g (inclui ~1g)"));
-        Serial.println(F(
-          "  [NVS] Offsets salvos (sigma_cal)."));
-        Serial.println(F(""));
-
-        // --- Menu pos-calibracao conforme SUS, Secao 13 ---
-        while (Serial.available()) Serial.read();
-        Serial.println(F(
-          "+----------------------------------------------------------+"));
-        Serial.println(F(
-          "|  CALIBRACAO CONCLUIDA COM SUCESSO!                       |"));
-        Serial.println(F(
-          "|  [S] = SAIR ao monitoramento                             |"));
-
-        // Exibe opcao [R] apenas se ainda ha tentativas disponiveis
-        if (tentativas < MAX_RECALIBRACOES) {
-          Serial.println(F(
-            "|  [R] = RECALIBRAR novamente                              |"));
-        }
-        Serial.println(F(
-          "+----------------------------------------------------------+"));
-
-        {
-          uint32_t inicio   = millis();
-          uint32_t segs     = 60;
-          uint32_t ultSeg   = millis();
-          bool     aguardando = true;
-
-          Serial.print(F(
-            "  Aguardando... tempo restante: 60 s\r"));
-
-          while (aguardando && (millis() - inicio) < 60000) {
-            esp_task_wdt_reset();
-
-            if ((millis() - ultSeg) >= 1000) {
-              ultSeg = millis();
-              segs--;
-              Serial.print(F(
-                "  Aguardando... tempo restante: "));
-              Serial.print(segs);
-              Serial.print(F(" s   \r"));
-            }
-
-            if (Serial.available() > 0) {
-              char r = toupper(Serial.read());
-              Serial.println(F(""));
-
-              if (r == 'S') {
-                Serial.println(F(
-                  "  [MENU] Monitoramento retomado."));
-                Serial.println(F(""));
-                aguardando = false;
-              } else if (r == 'R' &&
-                         tentativas < MAX_RECALIBRACOES) {
-                Serial.println(F(
-                  "  [MENU] Iniciando nova calibracao..."));
-                Serial.println(F(""));
-                aguardando = false;
-                recalibrar = true;
-              }
-            }
-            delay(50);
-          }
-
-          if (aguardando) {
-            Serial.println(F(""));
-            Serial.println(F(
-              "  [TIMEOUT] Sem resposta. Monitoramento retomado."));
-            Serial.println(F(""));
-          }
-        }
+        timerInicio = millis();
+        ultSeg = millis();
+        segRest = 30;
+        estado = CAL_CONFIRM;
+        break;
       }
+      } // switch (estado)
 
-      // Limite de tentativas atingido
-      if (recalibrar && tentativas >= MAX_RECALIBRACOES) {
-        Serial.println(F(""));
-        Serial.println(F(
-          "  [WARN] Limite de recalibrações atingido."));
-        Serial.println(F(
-          "  [MENU] Monitoramento retomado automaticamente."));
-        Serial.println(F(""));
-      }
-      break;
+      break; // case 'C'
     }
 
     // ---------------------------------------------------------
