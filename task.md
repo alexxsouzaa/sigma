@@ -206,6 +206,8 @@ Entregas
 
 ## T013 — Qualidade dos Sensores
 
+Status: Concluído
+
 Objetivo
 
 Criar índice de confiança da leitura.
@@ -227,7 +229,20 @@ Transformar leituras em eventos.
 
 ## T014 — Event Manager
 
+Status: Concluído
+
+Objetivo
+
 Criar sistema de eventos internos.
+
+Entregas
+
+* EventTypes.h: 10 tipos de evento (leituras, alarmes, outliers, calibracao)
+* EventManager.h/.cpp: barramento pub/sub estatico sem alocacao dinamica
+* Disparo sincrono (disparar) e assincrono (enfileirar + processarFila)
+* MAX_ASSINANTES = 16, MAX_EVENTOS_FILA = 8
+* Callback de log serial via SIGMA_DEBUG_EVENTOS
+* Integrado em main.cpp: eventos disparados a cada leitura/processamento
 
 ---
 

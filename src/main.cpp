@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.9.0
-//  Codename   : Qualidade dos Sensores
+//  Versao     : 0.1.10.0
+//  Codename   : Event Manager
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -40,6 +40,8 @@
 #include "services/filter/DigitalFilter.h"
 #include "services/filter/OutlierFilter.h"
 #include "services/SensorQualityService.h"
+#include "services/event/EventTypes.h"
+#include "services/event/EventManager.h"
 
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
@@ -63,6 +65,7 @@ DigitalFilter filtroVib;
 OutlierFilter outlierTemp;
 OutlierFilter outlierVib;
 SensorQualityService sensorQuality;
+EventManager eventBus;
 
 CommandHandler     cmdHandler;
 
@@ -83,6 +86,22 @@ static float _dcZ = 0.0f;
 
 uint32_t ultimaLeituraMs = 0;
 uint32_t inicioSistemaMs = 0;
+
+// =============================================================
+//  CALLBACK DE EVENTO (T014)
+// =============================================================
+static void onEvento(EventType tipo, const EventoDados& dados) {
+  (void)dados;
+  #ifdef SIGMA_DEBUG_EVENTOS
+  Serial.print(F("  [EVT] Tipo="));
+  Serial.print((uint8_t)tipo);
+  Serial.print(F(" v1="));
+  Serial.print(dados.valorPrincipal, 3);
+  Serial.print(F(" v2="));
+  Serial.print(dados.valorSecundario, 3);
+  Serial.println(F(""));
+  #endif
+}
 
 // =============================================================
 //  SETUP
@@ -144,6 +163,12 @@ void setup() {
   outlierVib.configurar(0.0f, (float)cfgData.escalaG);
   ui.imprimirMensagem("OK", "Filtros de outlier configurados.");
 
+  // Registro de callbacks do barramento de eventos (T014)
+  for (uint8_t i = 0; i < (uint8_t)EventType::QTDE; i++) {
+    eventBus.inscrever((EventType)i, onEvento);
+  }
+  ui.imprimirMensagem("OK", "Barramento de eventos inicializado.");
+
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
 }
@@ -193,7 +218,15 @@ void loop() {
     sensorQuality.atualizarTemp(tempDado.valido);
     if (tempDado.valido) {
       tBruta = outlierTemp.filtrar(tBruta);
-      if (isnan(tBruta)) tBruta = 0.0f;
+      if (isnan(tBruta)) {
+        tBruta = 0.0f;
+        EventoDados ev = { tempDado.temperaturaCelsius, 0.0f, 0, 0 };
+        eventBus.disparar(EventType::OUTLIER_TEMP, ev);
+      }
+    }
+    {
+      EventoDados ev = { tBruta, 0.0f, 0, (uint8_t)(tempDado.valido ? 0 : 1) };
+      eventBus.disparar(EventType::TEMP_LEITURA, ev);
     }
     
     sensorQuality.atualizarVib(vibDado.valido);
@@ -213,7 +246,15 @@ void loop() {
 
       // Rejeita outliers por Z-Score
       vBruta = outlierVib.filtrar(vBruta);
-      if (isnan(vBruta)) vBruta = 0.0f;
+      if (isnan(vBruta)) {
+        vBruta = 0.0f;
+        EventoDados ev = { 0.0f, 0.0f, 1, 0 };
+        eventBus.disparar(EventType::OUTLIER_VIB, ev);
+      }
+    }
+    {
+      EventoDados ev = { vBruta, 0.0f, 1, 0 };
+      eventBus.disparar(EventType::VIB_LEITURA, ev);
     }
 
     // Aplica filtro digital as leituras brutas
@@ -246,6 +287,17 @@ void loop() {
     if (strcmp(txtAlm, "AVISO") == 0)   almCode = AlarmLevel::WARNING;
     if (strcmp(txtAlm, "CRITICO") == 0) almCode = AlarmLevel::CRITICAL;
 
+    // Dispara eventos de alarme (T014)
+    if (almCode != AlarmLevel::NORMAL) {
+      EventoDados ev = { tAtual, vAtual, 0, (uint8_t)almCode };
+      eventBus.disparar(EventType::TEMP_ALARME, ev);
+      eventBus.disparar(EventType::VIB_ALARME, ev);
+    }
+    {
+      EventoDados ev = { score, 0.0f, 2, 0 };
+      eventBus.disparar(EventType::SAUDE_ALTERADA, ev);
+    }
+
     AnalyticsSample novaAmostra = {
       .timestamp   = agora,
       .temperature = tAtual,
@@ -266,4 +318,7 @@ void loop() {
     // 5. Renderizacao Camada UI conectada a API
     ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm, res, qRel);
   }
+
+  // Processa eventos enfileirados (T014)
+  eventBus.processarFila();
 }

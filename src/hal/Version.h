@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.9.0
-//  Codename   : Qualidade dos Sensores
+//  Versao     : 0.1.10.0
+//  Codename   : Event Manager
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -15,8 +15,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.9.0"
-#define SIGMA_CODENAME         "Qualidade dos Sensores"
+#define SIGMA_FIRMWARE_VERSION "0.1.10.0"
+#define SIGMA_CODENAME         "Event Manager"
 
 // -------------------------
 //  Analytics Engine
