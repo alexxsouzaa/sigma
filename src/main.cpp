@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.10.0
-//  Codename   : Event Manager
+//  Versao     : 0.1.11.0
+//  Codename   : Historico de Eventos
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -42,6 +42,7 @@
 #include "services/SensorQualityService.h"
 #include "services/event/EventTypes.h"
 #include "services/event/EventManager.h"
+#include "services/event/EventHistory.h"
 
 // =============================================================
 //  INSTANCIAS GLOBAIS DE ORQUESTRACAO
@@ -66,6 +67,7 @@ OutlierFilter outlierTemp;
 OutlierFilter outlierVib;
 SensorQualityService sensorQuality;
 EventManager eventBus;
+EventHistory eventHistory;
 
 CommandHandler     cmdHandler;
 
@@ -91,7 +93,7 @@ uint32_t inicioSistemaMs = 0;
 //  CALLBACK DE EVENTO (T014)
 // =============================================================
 static void onEvento(EventType tipo, const EventoDados& dados) {
-  (void)dados;
+  eventHistory.registrar(millis(), tipo, dados);
   #ifdef SIGMA_DEBUG_EVENTOS
   Serial.print(F("  [EVT] Tipo="));
   Serial.print((uint8_t)tipo);

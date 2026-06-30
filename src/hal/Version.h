@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.10.0
-//  Codename   : Event Manager
+//  Versao     : 0.1.11.0
+//  Codename   : Historico de Eventos
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -15,8 +15,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.10.0"
-#define SIGMA_CODENAME         "Event Manager"
+#define SIGMA_FIRMWARE_VERSION "0.1.11.0"
+#define SIGMA_CODENAME         "Historico de Eventos"
 
 // -------------------------
 //  Analytics Engine

@@ -246,9 +246,20 @@ Entregas
 
 ---
 
-## T015 — Histórico de Eventos
+## T015 — Historico de Eventos
 
-Registrar eventos em memória.
+Status: Concluido
+
+Objetivo
+
+Registrar eventos em memoria.
+
+Entregas
+
+* EventHistory.h/.cpp: buffer circular de 40 eventos em RAM
+* Registro automatico via callback do EventManager em main.cpp
+* Consulta temporal com obter() e visualizacao com imprimir()
+* Integrado: cada evento do barramento e persistido no historico
 
 ---
 
