@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.7.3
-//  Codename   : Calibracao Nao-Bloqueante
+//  Versao     : 0.1.7.4
+//  Codename   : Calibracao Passo Fix
 //  Data       : 2026-06-29
 // =============================================================
 
@@ -43,39 +43,30 @@ void CalibrationService::iniciar() {
 // =============================================================
 //  FUNCAO: passo
 //  Le uma amostra do sensor se o intervalo minimo tiver
-//  passado. Retorna true quando todas as 200 amostras
-//  forem coletadas. Nunca bloqueia.
+//  passado. Avanca apenas em leituras validas.
+//  Retorna true quando as 200 amostras forem coletadas.
+//  Nunca bloqueia.
 // =============================================================
 bool CalibrationService::passo(Mpu6050Driver& driver) {
   if (!_ativo) return true;
 
   uint32_t agora = millis();
   if (agora - _ultimoMs < INTERVALO_MS) return false;
-
   _ultimoMs = agora;
 
-  // Leitura bruta (sem offsets) com ate 3 tentativas
-  Mpu6050Data bruto = { 0.0f, 0.0f, 0.0f, false };
-  for (int tent = 0; tent < 3 && !bruto.valido; tent++) {
-    bruto = driver.lerAceleracao(0.0f, 0.0f, 0.0f);
-    if (!bruto.valido) {
-      // Aguarda o proximo ciclo para tentar novamente
-      _ultimoMs = millis();
-      return false;
-    }
-  }
+  // Leitura bruta (sem offsets). Se falhar, tenta de novo
+  // no proximo ciclo (retorno false sem incrementar).
+  Mpu6050Data bruto = driver.lerAceleracao(0.0f, 0.0f, 0.0f);
+  if (!bruto.valido) return false;
 
-  if (bruto.valido) {
-    _somaX += bruto.ax;
-    _somaY += bruto.ay;
-    _somaZ += bruto.az;
-    _amostrasValidas++;
-  }
-
+  _somaX += bruto.ax;
+  _somaY += bruto.ay;
+  _somaZ += bruto.az;
   _indice++;
 
   if (_indice >= TOTAL_AMOSTRAS) {
     _ativo = false;
+    _amostrasValidas = _indice;
     return true;
   }
 
