@@ -6,8 +6,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.17.0
-//  Codename   : Boot Diagnostics
+//  Versao     : 0.1.18.0
+//  Codename   : Runtime Diagnostics
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -52,6 +52,9 @@ public:
   // Processa todos os eventos enfileirados.
   void processarFila();
 
+  // Retorna quantidade de eventos pendentes na fila.
+  uint8_t quantidadePendentes() const { return _numPendentes; }
+
   // Remove todos inscritos e limpa fila.
   void reset();
 
@@ -71,5 +74,6 @@ private:
   Assinante   _assinantes[MAX_ASSINANTES];
   EventoFila  _fila[MAX_EVENTOS_FILA];
   uint8_t     _numAssinantes;
+  uint8_t     _numPendentes;
   SemaphoreHandle_t _filaMutex;
 };

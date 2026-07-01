@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.17.0
-//  Codename   : Boot Diagnostics
+//  Versao     : 0.1.18.0
+//  Codename   : Runtime Diagnostics
 //  Data       : 2026-06-30
 
 // =============================================================
@@ -16,8 +16,8 @@
 // -------------------------
 //  Versao e Release
 // -------------------------
-#define SIGMA_FIRMWARE_VERSION "0.1.17.0"
-#define SIGMA_CODENAME         "Boot Diagnostics"
+#define SIGMA_FIRMWARE_VERSION "0.1.18.0"
+#define SIGMA_CODENAME         "Runtime Diagnostics"
 
 // -------------------------
 //  Analytics Engine

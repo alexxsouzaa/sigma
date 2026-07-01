@@ -281,7 +281,16 @@ Autodiagnóstico completo.
 
 ## T017 — Boot Diagnostics
 
+Status: Concluido
+
 Verificação completa durante inicialização.
+
+Entregas
+
+* DiagnosticReport: relatorio formatado com status PASS/FAIL
+  para cada subsistema (MPU6050, DS18B20, NVS, FreeRTOS Tasks)
+* NvsBoot: contador de boots persistente (sigma_boot)
+* Relatorio exibido ao final do setup() com RAM livre e boot count
 
 ---
 

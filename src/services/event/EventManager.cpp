@@ -6,8 +6,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.17.0
-//  Codename   : Boot Diagnostics
+//  Versao     : 0.1.18.0
+//  Codename   : Runtime Diagnostics
 //  Data       : 2026-06-30
 // =============================================================
 
@@ -18,6 +18,7 @@
 // =============================================================
 EventManager::EventManager() {
   _numAssinantes = 0;
+  _numPendentes  = 0;
   for (uint8_t i = 0; i < MAX_ASSINANTES; i++) {
     _assinantes[i].ativo = false;
     _assinantes[i].callback = nullptr;
@@ -67,6 +68,7 @@ bool EventManager::enfileirar(EventType tipo, const EventoDados& dados) {
       _fila[i].tipo   = tipo;
       _fila[i].dados  = dados;
       _fila[i].ocupado = true;
+      _numPendentes++;
       ok = true;
       break;
     }
@@ -93,6 +95,7 @@ void EventManager::processarFila() {
       _fila[i].ocupado = false;
       n++;
     }
+    _numPendentes = 0;
     xSemaphoreGive(_filaMutex);
   }
 

@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.17.0
-//  Codename   : Boot Diagnostics
+//  Versao     : 0.1.18.0
+//  Codename   : Runtime Diagnostics
 //  Data       : 2026-06-29
 // =============================================================
 
@@ -1094,6 +1094,16 @@ void CommandHandler::processar(CommandContext& ctx) {
     }
 
     // ---------------------------------------------------------
+    //  [D] Diagnostico de Execucao
+    //  Exibe metricas de runtime: RAM, tasks, sensores, eventos.
+    // ---------------------------------------------------------
+    case 'D': {
+      ctx.runtimeDiag.imprimir(millis(),
+                               ctx.eventHistory.quantidade());
+      break;
+    }
+
+    // ---------------------------------------------------------
     //  [L] Sistema de Alertas
     //  Menu interativo: listar, reconhecer e historico.
     //  Segue o padrao do menu de sensibilidade [A].
@@ -1300,7 +1310,7 @@ void CommandHandler::processar(CommandContext& ctx) {
       Serial.print(cmd);
       Serial.println(F("]"));
       Serial.println(F(
-        "  [INFO] Comandos validos: C A B K R H N Z X L."));
+        "  [INFO] Comandos validos: C A B D K R H N Z X L."));
       Serial.println(F(""));
       break;
     }

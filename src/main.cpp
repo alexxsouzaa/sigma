@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.17.0
-//  Codename   : Boot Diagnostics
+//  Versao     : 0.1.18.0
+//  Codename   : Runtime Diagnostics
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -46,6 +46,7 @@
 #include "services/event/EventHistory.h"
 #include "services/alarm/AlarmManager.h"
 #include "services/diag/DiagnosticReport.h"
+#include "services/diag/RuntimeDiagnostics.h"
 #include "storage/NvsAlarm.h"
 #include "storage/NvsBoot.h"
 #include <freertos/FreeRTOS.h>
@@ -81,8 +82,9 @@ EventHistory eventHistory;
 AlarmManager       alarmManager;
 NvsAlarm           nvsAlarm;
 NvsBoot            nvsBoot;
-DiagnosticReport   diag;
-bool               _ds18b20Ok = false;
+DiagnosticReport       diag;
+RuntimeDiagnostics     runtimeDiag;
+bool                   _ds18b20Ok = false;
 
 CommandHandler     cmdHandler;
 
@@ -343,6 +345,10 @@ static void processingTask(void* pvParams) {
     AnalyticsResult res = analytics.getLatestResult();
     SensorQualityReport qRel = sensorQuality.obterRelatorio();
 
+    runtimeDiag.atualizar(agora, (float)qRel.temp.confianca,
+                          (float)qRel.vib.confianca,
+                          eventBus.quantidadePendentes());
+
     ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais,
                          score, txtH, txtAlm, res, qRel);
   }
@@ -479,6 +485,22 @@ void setup() {
   ui.imprimirMensagem("OK", "ProcessingTask criada "
                       "(nucleo 1, prioridade 3).");
 
+  // Registra tarefas no diagnostico de execucao (T018)
+  runtimeDiag.adicionarTarefa(sensorTaskHandle,
+    "SensorTask", 4096);
+  runtimeDiag.adicionarTarefa(eventTaskHandle,
+    "EventTask", 3072);
+  runtimeDiag.adicionarTarefa(processingTaskHandle,
+    "ProcessingTask", 4096);
+  runtimeDiag.adicionarTarefa(uiTaskHandle,
+    "UITask", 2048);
+  {
+    TaskHandle_t loopH = xTaskGetHandle("loopTask");
+    if (loopH != NULL) {
+      runtimeDiag.adicionarTarefa(loopH, "loopTask", 8192);
+    }
+  }
+
   // Diagnosticos de inicializacao (T017)
   nvsBoot.incrementar();
   DiagData dd;
@@ -510,7 +532,9 @@ void loop() {
     .nvsCfg = nvsCfg,       .cfgData = cfgData,
     .driverVib = driverVib, .srvCal  = srvCal,
     .alarmManager = alarmManager,
-    .ui = ui,               .i2cMutex = i2cMutex,
+    .runtimeDiag = runtimeDiag,
+    .ui = ui,               .eventHistory = eventHistory,
+    .i2cMutex = i2cMutex,
     .inicioSistemaMs = inicioSistemaMs
   };
 

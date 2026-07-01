@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.17.0
-//  Codename   : Boot Diagnostics
+//  Versao     : 0.1.18.0
+//  Codename   : Runtime Diagnostics
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -19,6 +19,8 @@
 #include "../drivers/Mpu6050Driver.h"
 #include "../services/CalibrationService.h"
 #include "../services/alarm/AlarmManager.h"
+#include "../services/diag/RuntimeDiagnostics.h"
+#include "../services/event/EventHistory.h"
 #include "SerialUI.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -39,8 +41,10 @@ struct CommandContext {
   NvsConfigData&      cfgData;
   Mpu6050Driver&      driverVib;
   CalibrationService& srvCal;
-  AlarmManager&       alarmManager;
-  SerialUI&           ui;
+  AlarmManager&           alarmManager;
+  RuntimeDiagnostics&     runtimeDiag;
+  SerialUI&               ui;
+  EventHistory&           eventHistory;
   SemaphoreHandle_t   i2cMutex;
   uint32_t&           inicioSistemaMs;
 };
