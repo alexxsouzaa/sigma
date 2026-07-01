@@ -88,24 +88,9 @@ struct SensorQueueItem {
 
 xQueueHandle      sensorQueue;
 SemaphoreHandle_t i2cMutex;
-SemaphoreHandle_t serialMutex;
 TaskHandle_t      sensorTaskHandle;
 TaskHandle_t      eventTaskHandle;
 TaskHandle_t      uiTaskHandle;
-
-// -------------------------
-//  Item da fila da UITask
-// -------------------------
-struct UIReportItem {
-  uint32_t          timestamp;
-  float             temp, vib, horas, score;
-  char              clHealth[12];
-  char              clAlarme[12];
-  AnalyticsResult   analytics;
-  SensorQualityReport qual;
-};
-
-xQueueHandle uiReportQueue;
 
 // =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
@@ -193,23 +178,13 @@ static void eventTask(void* pvParams) {
 
 // =============================================================
 //  TAREFA: uiTask (Nucleo 0, prioridade 1)
-//  Recebe dados de relatorio via fila e imprime na Serial.
-//  Desacopla a UI pesada (prints de relatorio) do ciclo de
-//  processamento de dados.
+//  Reservado para futura entrada serial desacoplada.
+//  Atualmente inativo — todo output serial e no core 1.
 // =============================================================
 static void uiTask(void* pvParams) {
   (void)pvParams;
-  UIReportItem item;
   while (true) {
-    if (xQueueReceive(uiReportQueue, &item, portMAX_DELAY) == pdTRUE) {
-      if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        ui.imprimirRelatorio(
-          item.timestamp, item.temp, item.vib, item.horas,
-          item.score, item.clHealth, item.clAlarme,
-          item.analytics, item.qual);
-        xSemaphoreGive(serialMutex);
-      }
-    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
@@ -281,10 +256,9 @@ void setup() {
 
   // Criacao do mutex I2C e fila de sensores (Fase 1)
   i2cMutex    = xSemaphoreCreateMutex();
-  serialMutex = xSemaphoreCreateMutex();
   sensorQueue = xQueueCreate(1, sizeof(SensorQueueItem));
   
-  if (i2cMutex == NULL || serialMutex == NULL || sensorQueue == NULL) {
+  if (i2cMutex == NULL || sensorQueue == NULL) {
     ui.imprimirErroFatal("Falha ao criar recursos FreeRTOS.",
                          "RAM insuficiente.");
     esp_task_wdt_delete(NULL);
@@ -313,23 +287,16 @@ void setup() {
   }
   ui.imprimirMensagem("OK", "EventTask criada (nucleo 1, prioridade 2).");
 
-  // Cria fila e tarefa de UI (nucleo 0, prioridade 1)
-  uiReportQueue = xQueueCreate(2, sizeof(UIReportItem));
-  if (uiReportQueue == NULL) {
-    ui.imprimirErroFatal("Falha ao criar fila da UITask.",
-                         "RAM insuficiente.");
-    esp_task_wdt_delete(NULL);
-    while (true) delay(1000);
-  }
+  // Cria tarefa de UI no nucleo 0 (reservada para uso futuro)
   if (xTaskCreatePinnedToCore(
-        uiTask, "UITask", 4096, NULL, 1,
+        uiTask, "UITask", 2048, NULL, 1,
         &uiTaskHandle, 0) != pdPASS) {
     ui.imprimirErroFatal("Falha ao criar UITask.",
                          "RAM insuficiente.");
     esp_task_wdt_delete(NULL);
     while (true) delay(1000);
   }
-  ui.imprimirMensagem("OK", "UITask criada (nucleo 0, prioridade 1).");
+  ui.imprimirMensagem("OK", "UITask criada (nucleo 0, reserva).");
 
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
@@ -349,7 +316,6 @@ void loop() {
     .nvsCfg = nvsCfg,       .cfgData = cfgData,
     .driverVib = driverVib, .srvCal  = srvCal, 
     .ui = ui,               .i2cMutex = i2cMutex,
-    .serialMutex = serialMutex,
     .inicioSistemaMs = inicioSistemaMs
   };
 
@@ -480,17 +446,8 @@ void loop() {
 
     SensorQualityReport qRel = sensorQuality.obterRelatorio();
 
-    // 5. Envia dados para UITask (nucleo 0) imprimir
-    UIReportItem uiItem;
-    uiItem.timestamp = agora;
-    uiItem.temp     = tAtual;
-    uiItem.vib      = vAtual;
-    uiItem.horas    = horasTotais;
-    uiItem.score    = score;
-    snprintf(uiItem.clHealth, sizeof(uiItem.clHealth), "%s", txtH);
-    snprintf(uiItem.clAlarme, sizeof(uiItem.clAlarme), "%s", txtAlm);
-    uiItem.analytics = res;
-    uiItem.qual      = qRel;
-    xQueueSend(uiReportQueue, &uiItem, 0);
+    // 5. Renderizacao (sincrona, core 1 — sem contenicao serial)
+    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais,
+                         score, txtH, txtAlm, res, qRel);
   }
 }

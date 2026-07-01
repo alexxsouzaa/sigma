@@ -40,7 +40,6 @@ struct CommandContext {
   CalibrationService& srvCal;
   SerialUI&           ui;
   SemaphoreHandle_t   i2cMutex;
-  SemaphoreHandle_t   serialMutex;
   uint32_t&           inicioSistemaMs;
 };
 
