@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.15.0
-//  Codename   : ProcessingTask
+//  Versao     : 0.1.16.0
+//  Codename   : Sistema de Alertas
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -43,6 +43,8 @@
 #include "services/event/EventTypes.h"
 #include "services/event/EventManager.h"
 #include "services/event/EventHistory.h"
+#include "services/alarm/AlarmManager.h"
+#include "storage/NvsAlarm.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -72,6 +74,9 @@ OutlierFilter outlierVib;
 SensorQualityService sensorQuality;
 EventManager eventBus;
 EventHistory eventHistory;
+
+AlarmManager       alarmManager;
+NvsAlarm           nvsAlarm;
 
 CommandHandler     cmdHandler;
 
@@ -281,10 +286,42 @@ static void processingTask(void* pvParams) {
     if (strcmp(txtAlm, "AVISO") == 0)   almCode = AlarmLevel::WARNING;
     if (strcmp(txtAlm, "CRITICO") == 0) almCode = AlarmLevel::CRITICAL;
 
-    if (almCode != AlarmLevel::NORMAL) {
-      EventoDados ev = { tAtual, vAtual, 0, (uint8_t)almCode };
+    // Niveis por sensor para o AlarmManager (T016)
+    float limVA = cfgData.vibAviso;
+    float limVC = cfgData.vibCritica;
+    if (basData.basAtivo) {
+      limVA = basData.basMedia +
+              (basData.fatorK * basData.basStddev);
+      limVC = basData.basMedia +
+              (2.0f * basData.fatorK * basData.basStddev);
+    }
+    AlarmLevel nivelTemp = AlarmLevel::NORMAL;
+    if (tAtual >= 55.0f) {
+      nivelTemp = (tAtual >= 65.0f)
+        ? AlarmLevel::CRITICAL : AlarmLevel::WARNING;
+    }
+    AlarmLevel nivelVib = AlarmLevel::NORMAL;
+    if (vAtual >= limVA) {
+      nivelVib = (vAtual >= limVC)
+        ? AlarmLevel::CRITICAL : AlarmLevel::WARNING;
+    }
+
+    TransicaoAlarme trans = alarmManager.atualizar(
+      nivelTemp, nivelVib, agora);
+
+    if (trans.tempMudou) {
+      EventoDados ev = { tAtual, vAtual, 0, (uint8_t)nivelTemp };
       eventBus.enfileirar(EventType::TEMP_ALARME, ev);
+    }
+    if (trans.vibMudou) {
+      EventoDados ev = { tAtual, vAtual, 1, (uint8_t)nivelVib };
       eventBus.enfileirar(EventType::VIB_ALARME, ev);
+    }
+    if ((trans.tempMudou && !trans.tempAtivo) ||
+        (trans.vibMudou && !trans.vibAtivo)) {
+      AlarmaHistorico buf_[AlarmManager::MAX_HISTORICO];
+      uint8_t qtd_ = alarmManager.salvarHistorico(buf_);
+      if (qtd_ > 0) nvsAlarm.salvar(buf_, qtd_);
     }
     {
       EventoDados ev = { score, 0.0f, 2, 0 };
@@ -326,6 +363,14 @@ void setup() {
   nvsCal.carregar(calData);
   nvsBas.carregar(basData);
   ui.imprimirMensagem("SYS", "Estado persistente carregado da NVS.");
+
+  // Carrega historico de alarmes da NVS (T016)
+  {
+    AlarmaHistorico buf[AlarmManager::MAX_HISTORICO];
+    uint8_t qtd = nvsAlarm.carregar(buf, AlarmManager::MAX_HISTORICO);
+    if (qtd > 0) alarmManager.carregarHistorico(buf, qtd);
+    ui.imprimirMensagem("ALM", "Historico de alarmes carregado.");
+  }
 
   // Hardware Initialization (Camada 1 e 2)
   Wire.begin(PINO_MPU_SDA, PINO_MPU_SCL);
@@ -443,6 +488,7 @@ void loop() {
     .nvsCal = nvsCal,       .calData = calData,
     .nvsCfg = nvsCfg,       .cfgData = cfgData,
     .driverVib = driverVib, .srvCal  = srvCal,
+    .alarmManager = alarmManager,
     .ui = ui,               .i2cMutex = i2cMutex,
     .inicioSistemaMs = inicioSistemaMs
   };

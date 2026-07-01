@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.15.0
-//  Codename   : ProcessingTask
+//  Versao     : 0.1.16.0
+//  Codename   : Sistema de Alertas
 //  Data       : 2026-06-29
 // =============================================================
 
@@ -136,6 +136,36 @@ static float strParaFloat(const char* buf) {
 
   result += decimal;
   return negativo ? -result : result;
+}
+
+// =============================================================
+//  FUNCAO ESTATICA: formatarTempo
+//  Formata duracao em ms para "HH:MM:SS" (max 99:59:59).
+// -------------------------------------------------------------
+//  Parametros:
+//    buf : Buffer de saida (minimo 9 caracteres).
+//    ms  : Duracao em milissegundos.
+// =============================================================
+static void formatarTempo(char* buf, uint32_t ms) {
+  uint32_t t = ms / 1000;
+  uint32_t h = t / 3600;  t %= 3600;
+  uint32_t m = t / 60;    t %= 60;
+  buf[0] = '0' + (h / 10);  buf[1] = '0' + (h % 10);
+  buf[2] = ':';
+  buf[3] = '0' + (m / 10);  buf[4] = '0' + (m % 10);
+  buf[5] = ':';
+  buf[6] = '0' + (t / 10);  buf[7] = '0' + (t % 10);
+  buf[8] = '\0';
+}
+
+// =============================================================
+//  FUNCAO ESTATICA: nivelParaTexto
+//  Converte AlarmLevel para string curta.
+// =============================================================
+static const char* nivelParaTexto(AlarmLevel nivel) {
+  if (nivel == AlarmLevel::CRITICAL) return "CRIT";
+  if (nivel == AlarmLevel::WARNING)  return "WARN";
+  return "NORM";
 }
 
 // Constantes da maquina de estados da calibracao
@@ -1064,6 +1094,196 @@ void CommandHandler::processar(CommandContext& ctx) {
     }
 
     // ---------------------------------------------------------
+    //  [L] Sistema de Alertas
+    //  Menu interativo: listar, reconhecer e historico.
+    //  Segue o padrao do menu de sensibilidade [A].
+    // ---------------------------------------------------------
+    case 'L': {
+      while (Serial.available()) Serial.read();
+
+      Serial.println(F(""));
+      Serial.println(F(
+        "+----------------------------------------------------------+"));
+      Serial.println(F(
+        "|  SISTEMA DE ALERTAS                                       |"));
+      Serial.println(F(
+        "+----------------------------------------------------------+"));
+      Serial.println(F(""));
+
+      uint32_t agora         = ctx.inicioSistemaMs;
+      uint8_t  qtdAtivos     = ctx.alarmManager.quantidadeAtivos();
+      uint8_t  qtdHistorico  = ctx.alarmManager.quantidadeHistorico();
+
+      if (qtdAtivos > 0) {
+        Serial.println(F(
+          "  Alarmes Ativos:"));
+        for (uint8_t i = 0; i < qtdAtivos; i++) {
+          const AlarmaAtivo* a = ctx.alarmManager.obterAtivo(i);
+          if (a == NULL) continue;
+          char tempo[9];
+          formatarTempo(tempo, millis() - a->timestampInicio);
+          Serial.print(F("  ["));
+          Serial.print(i);
+          Serial.print(F("] "));
+          Serial.print(a->tipo == AlarmType::TEMPERATURA
+                       ? F("TEMP ") : F("VIB  "));
+          Serial.print(nivelParaTexto(a->nivel));
+          if (a->reconhecido) {
+            Serial.println(F("  (RECONHECIDO)"));
+          } else {
+            Serial.println(F("  (PENDENTE)"));
+          }
+          Serial.print(F("       Desde: "));
+          Serial.println(tempo);
+        }
+      } else {
+        Serial.println(F(
+          "  Nenhum alarme ativo."));
+      }
+
+      if (qtdHistorico > 0) {
+        Serial.print(F("  Historico: "));
+        Serial.print(qtdHistorico);
+        Serial.println(F(" registro(s)  |  [H] = ver"));
+      } else {
+        Serial.println(F(
+          "  Historico: vazio."));
+      }
+
+      Serial.println(F(""));
+      Serial.println(F(
+        "  <n> = RECONHECER alarme  |  [H] = Historico  |  [S] = SAIR"));
+      Serial.println(F(
+        "+----------------------------------------------------------+"));
+
+      {
+        uint32_t inicio    = millis();
+        uint32_t segs      = 30;
+        uint32_t ultSeg    = millis();
+        bool     menuAtivo = true;
+
+        Serial.print(F(
+          "  Aguardando... tempo restante: 30 s\r"));
+
+        while (menuAtivo && (millis() - inicio) < 30000) {
+          esp_task_wdt_reset();
+
+          if ((millis() - ultSeg) >= 1000) {
+            ultSeg = millis();
+            segs--;
+            Serial.print(F(
+              "  Aguardando... tempo restante: "));
+            Serial.print(segs);
+            Serial.print(F(" s   \r"));
+          }
+
+          if (Serial.available() > 0) {
+            char opcao = toupper(Serial.read());
+            Serial.println(F(""));
+
+            if (opcao == 'S') {
+              Serial.println(F(
+                "  [ALM] Saindo do menu de alertas."));
+              Serial.println(F(""));
+              menuAtivo = false;
+              break;
+            }
+
+            if (opcao == 'H') {
+              // Exibir historico
+              uint8_t histQtd = ctx.alarmManager.
+                                  quantidadeHistorico();
+              if (histQtd == 0) {
+                Serial.println(F(
+                  "  Historico vazio."));
+                Serial.println(F(""));
+              } else {
+                Serial.println(F(
+                  "+---------------------------------------------------+"));
+                Serial.println(F(
+                  "|  HISTORICO DE ALARMES                              |"));
+                Serial.println(F(
+                  "+---------------------------------------------------+"));
+                for (uint8_t i = 0; i < histQtd; i++) {
+                  const AlarmaHistorico* h =
+                    ctx.alarmManager.obterHistorico(i);
+                  if (h == NULL) continue;
+                  char dur[9];
+                  formatarTempo(dur,
+                    h->timestampFim - h->timestampInicio);
+                  Serial.print(F("  #"));
+                  if (i < 9) Serial.print(F("0"));
+                  Serial.print(i + 1);
+                  Serial.print(F("  "));
+                  Serial.print(
+                    h->tipo == AlarmType::TEMPERATURA
+                    ? F("TEMP  ") : F("VIB   "));
+                  Serial.print(nivelParaTexto(h->nivel));
+                  Serial.print(F("  Duracao: "));
+                  Serial.print(dur);
+                  if (h->foiReconhecido) {
+                    Serial.println(F("  (ACK)"));
+                  } else {
+                    Serial.println(F("  (---)"));
+                  }
+                }
+                Serial.println(F(
+                  "+---------------------------------------------------+"));
+                Serial.println(F(""));
+              }
+              continue; // Volta ao menu
+            }
+
+            // Reconhecer alarme por indice
+            if (opcao >= '0' && opcao <= '9') {
+              uint8_t idx = opcao - '0';
+              if (idx < qtdAtivos) {
+                const AlarmaAtivo* a =
+                  ctx.alarmManager.obterAtivo(idx);
+                if (a != NULL && ctx.alarmManager.
+                    reconhecer(a->tipo)) {
+                  Serial.print(F("  [ALM] Alarme "));
+                  Serial.print(
+                    a->tipo == AlarmType::TEMPERATURA
+                    ? F("TEMP ") : F("VIB "));
+                  Serial.println(F("reconhecido."));
+                  Serial.println(F(""));
+                } else {
+                  Serial.println(F(
+                    "  [ERRO] Alarme ja reconhecido ou "
+                    "inexistente."));
+                  Serial.println(F(""));
+                }
+                // Atualizaqtd para re-exibir
+                qtdAtivos = ctx.alarmManager.
+                              quantidadeAtivos();
+              } else {
+                Serial.println(F(
+                  "  [ERRO] Indice invalido."));
+                Serial.println(F(""));
+              }
+              continue; // Volta ao menu
+            }
+
+            Serial.println(F(
+              "  [ERRO] Opcao invalida. "
+              "Digite <n>, [H] ou [S]."));
+            Serial.println(F(""));
+          }
+          delay(50);
+        }
+
+        if (menuAtivo) {
+          Serial.println(F(""));
+          Serial.println(F(
+            "  [TIMEOUT] Menu de alertas fechado."));
+          Serial.println(F(""));
+        }
+      }
+      break;
+    }
+
+    // ---------------------------------------------------------
     //  default — Caracteres nao reconhecidos
     //  Quebras de linha (\n, \r) e espacos sao ignorados
     //  silenciosamente pois chegam como artefato do terminal.
@@ -1080,7 +1300,7 @@ void CommandHandler::processar(CommandContext& ctx) {
       Serial.print(cmd);
       Serial.println(F("]"));
       Serial.println(F(
-        "  [INFO] Comandos validos: C A B K R H N Z X."));
+        "  [INFO] Comandos validos: C A B K R H N Z X L."));
       Serial.println(F(""));
       break;
     }

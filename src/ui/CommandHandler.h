@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.15.0
-//  Codename   : ProcessingTask
+//  Versao     : 0.1.16.0
+//  Codename   : Sistema de Alertas
 //  Data       : 2026-06-28
 // =============================================================
 
@@ -18,6 +18,7 @@
 #include "../storage/NvsConfig.h"
 #include "../drivers/Mpu6050Driver.h"
 #include "../services/CalibrationService.h"
+#include "../services/alarm/AlarmManager.h"
 #include "SerialUI.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -38,6 +39,7 @@ struct CommandContext {
   NvsConfigData&      cfgData;
   Mpu6050Driver&      driverVib;
   CalibrationService& srvCal;
+  AlarmManager&       alarmManager;
   SerialUI&           ui;
   SemaphoreHandle_t   i2cMutex;
   uint32_t&           inicioSistemaMs;
