@@ -265,6 +265,8 @@ Entregas
 
 ## T016 — Sistema de Alertas
 
+Status: Concluido
+
 Gerenciar alarmes persistentes.
 
 ---

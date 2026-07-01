@@ -5,13 +5,14 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.16.0
-//  Codename   : Sistema de Alertas
+//  Versao     : 0.1.17.0
+//  Codename   : Boot Diagnostics
 //  Data       : 2026-06-27
 // =============================================================
 
 #include <Arduino.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
 
 // HAL e Drivers
 #include "hal/PinConfig.h"
@@ -44,7 +45,9 @@
 #include "services/event/EventManager.h"
 #include "services/event/EventHistory.h"
 #include "services/alarm/AlarmManager.h"
+#include "services/diag/DiagnosticReport.h"
 #include "storage/NvsAlarm.h"
+#include "storage/NvsBoot.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -77,6 +80,9 @@ EventHistory eventHistory;
 
 AlarmManager       alarmManager;
 NvsAlarm           nvsAlarm;
+NvsBoot            nvsBoot;
+DiagnosticReport   diag;
+bool               _ds18b20Ok = false;
 
 CommandHandler     cmdHandler;
 
@@ -384,7 +390,8 @@ void setup() {
   driverVib.configurarEscala(cfgData.escalaG);
   ui.imprimirMensagem("OK", "MPU6050 inicializado.");
 
-  if (!driverTemp.begin(PINO_ONE_WIRE)) {
+  _ds18b20Ok = driverTemp.begin(PINO_ONE_WIRE);
+  if (!_ds18b20Ok) {
     ui.imprimirMensagem("WARN", "Nenhum DS18B20 detectado!");
   } else {
     ui.imprimirMensagem("OK", "DS18B20 inicializado.");
@@ -471,6 +478,20 @@ void setup() {
   }
   ui.imprimirMensagem("OK", "ProcessingTask criada "
                       "(nucleo 1, prioridade 3).");
+
+  // Diagnosticos de inicializacao (T017)
+  nvsBoot.incrementar();
+  DiagData dd;
+  dd.bootCount  = nvsBoot.lerContador();
+  dd.freeHeap   = esp_get_free_heap_size();
+  dd.mpuOk      = true;  // Fatal se falhou — nao chegaria aqui
+  dd.ds18b20Ok  = _ds18b20Ok;
+  dd.calOk      = calData.calibrado;
+  dd.horOk      = (horData.horimetro >= 0.0f);
+  dd.cfgOk      = true;  // Sempre carrega com defaults
+  dd.basOk      = basData.basAtivo;
+  dd.tasksOk    = true;  // Fatal se falhou — nao chegaria aqui
+  diag.imprimir(dd);
 
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");

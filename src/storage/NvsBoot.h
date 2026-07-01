@@ -1,7 +1,7 @@
 // =============================================================
 //  Project SIGMA
-//  Arquivo    : NvsAlarm.h
-//  Descricao  : Persistencia do historico de alarmes (T016).
+//  Arquivo    : NvsBoot.h
+//  Descricao  : Persistencia do contador de boots (T017).
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
@@ -13,11 +13,10 @@
 #pragma once
 
 #include <stdint.h>
-#include "../services/alarm/AlarmManager.h"
 
-class NvsAlarm {
+class NvsBoot {
 public:
-  bool salvar(const AlarmaHistorico* dados, uint8_t qtd);
-  uint8_t carregar(AlarmaHistorico* buffer, uint8_t capacidade);
-  void apagar();
+  uint32_t lerContador();
+  void     incrementar();
+  void     apagar();
 };

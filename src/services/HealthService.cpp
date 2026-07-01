@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.16.0
-//  Codename   : Sistema de Alertas
+//  Versao     : 0.1.17.0
+//  Codename   : Boot Diagnostics
 //  Data       : 2026-06-27
 // =============================================================
 
