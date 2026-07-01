@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.13.0
-//  Codename   : Multitarefa EVENT
+//  Versao     : 0.1.14.0
+//  Codename   : Multitarefa UI
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -90,6 +90,21 @@ xQueueHandle      sensorQueue;
 SemaphoreHandle_t i2cMutex;
 TaskHandle_t      sensorTaskHandle;
 TaskHandle_t      eventTaskHandle;
+TaskHandle_t      uiTaskHandle;
+
+// -------------------------
+//  Item da fila da UITask
+// -------------------------
+struct UIReportItem {
+  uint32_t          timestamp;
+  float             temp, vib, horas, score;
+  char              clHealth[12];
+  char              clAlarme[12];
+  AnalyticsResult   analytics;
+  SensorQualityReport qual;
+};
+
+xQueueHandle uiReportQueue;
 
 // =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
@@ -172,6 +187,25 @@ static void eventTask(void* pvParams) {
   while (true) {
     eventBus.processarFila();
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+// =============================================================
+//  TAREFA: uiTask (Nucleo 0, prioridade 1)
+//  Recebe dados de relatorio via fila e imprime na Serial.
+//  Desacopla a UI pesada (prints de relatorio) do ciclo de
+//  processamento de dados.
+// =============================================================
+static void uiTask(void* pvParams) {
+  (void)pvParams;
+  UIReportItem item;
+  while (true) {
+    if (xQueueReceive(uiReportQueue, &item, portMAX_DELAY) == pdTRUE) {
+      ui.imprimirRelatorio(
+        item.timestamp, item.temp, item.vib, item.horas,
+        item.score, item.clHealth, item.clAlarme,
+        item.analytics, item.qual);
+    }
   }
 }
 
@@ -273,6 +307,24 @@ void setup() {
     while (true) delay(1000);
   }
   ui.imprimirMensagem("OK", "EventTask criada (nucleo 1, prioridade 2).");
+
+  // Cria fila e tarefa de UI (nucleo 0, prioridade 1)
+  uiReportQueue = xQueueCreate(2, sizeof(UIReportItem));
+  if (uiReportQueue == NULL) {
+    ui.imprimirErroFatal("Falha ao criar fila da UITask.",
+                         "RAM insuficiente.");
+    esp_task_wdt_delete(NULL);
+    while (true) delay(1000);
+  }
+  if (xTaskCreatePinnedToCore(
+        uiTask, "UITask", 4096, NULL, 1,
+        &uiTaskHandle, 0) != pdPASS) {
+    ui.imprimirErroFatal("Falha ao criar UITask.",
+                         "RAM insuficiente.");
+    esp_task_wdt_delete(NULL);
+    while (true) delay(1000);
+  }
+  ui.imprimirMensagem("OK", "UITask criada (nucleo 0, prioridade 1).");
 
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
@@ -422,7 +474,17 @@ void loop() {
 
     SensorQualityReport qRel = sensorQuality.obterRelatorio();
 
-    // 5. Renderizacao Camada UI conectada a API
-    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais, score, txtH, txtAlm, res, qRel);
+    // 5. Envia dados para UITask (nucleo 0) imprimir
+    UIReportItem uiItem;
+    uiItem.timestamp = agora;
+    uiItem.temp     = tAtual;
+    uiItem.vib      = vAtual;
+    uiItem.horas    = horasTotais;
+    uiItem.score    = score;
+    snprintf(uiItem.clHealth, sizeof(uiItem.clHealth), "%s", txtH);
+    snprintf(uiItem.clAlarme, sizeof(uiItem.clAlarme), "%s", txtAlm);
+    uiItem.analytics = res;
+    uiItem.qual      = qRel;
+    xQueueSend(uiReportQueue, &uiItem, 0);
   }
 }
