@@ -5,8 +5,8 @@
 //  Autor      : Bruno Alex Souza da Silva
 //  Plataforma : ESP32-S3-DevKitC-1
 //  Framework  : Arduino via PlatformIO
-//  Versao     : 0.1.14.0
-//  Codename   : Multitarefa UI
+//  Versao     : 0.1.15.0
+//  Codename   : ProcessingTask
 //  Data       : 2026-06-27
 // =============================================================
 
@@ -91,6 +91,7 @@ SemaphoreHandle_t i2cMutex;
 TaskHandle_t      sensorTaskHandle;
 TaskHandle_t      eventTaskHandle;
 TaskHandle_t      uiTaskHandle;
+TaskHandle_t      processingTaskHandle;
 
 // =============================================================
 //  ESTADO DA APLICACAO (Em memoria)
@@ -185,6 +186,122 @@ static void uiTask(void* pvParams) {
   (void)pvParams;
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+// =============================================================
+//  TAREFA: processingTask (Nucleo 1, prioridade 3)
+//  Processa dados dos sensores quando disponiveis na fila.
+//  Descarrega o loop principal para resposta serial rapida.
+// =============================================================
+static void processingTask(void* pvParams) {
+  (void)pvParams;
+  SensorQueueItem item;
+  while (true) {
+    if (xQueueReceive(sensorQueue, &item, portMAX_DELAY) != pdTRUE)
+      continue;
+
+    // Durante calibracao, nao processa dados
+    if (cmdHandler.isCalibrating()) continue;
+
+    uint32_t agora = item.timestamp;
+
+    float horasRodando = (float)(agora - inicioSistemaMs) / 3600000.0f;
+    float horasTotais  = horData.horimetro + horasRodando;
+
+    Ds18b20Data tempDado = item.temp;
+    Mpu6050Data vibDado  = item.vib;
+
+    // Validacao estrita e filtragem digital
+    float tBruta = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;
+    float vBruta = 0.0f;
+
+    sensorQuality.atualizarTemp(tempDado.valido);
+    if (tempDado.valido) {
+      tBruta = outlierTemp.filtrar(tBruta);
+      if (isnan(tBruta)) {
+        tBruta = 0.0f;
+        EventoDados ev = { tempDado.temperaturaCelsius, 0.0f, 0, 0 };
+        eventBus.enfileirar(EventType::OUTLIER_TEMP, ev);
+      }
+    }
+    {
+      EventoDados ev = { tBruta, 0.0f, 0,
+                         (uint8_t)(tempDado.valido ? 0 : 1) };
+      eventBus.enfileirar(EventType::TEMP_LEITURA, ev);
+    }
+
+    sensorQuality.atualizarVib(vibDado.valido);
+    if (vibDado.valido) {
+      const float alfaDC = 0.005f;
+      float axAC = vibDado.ax - _dcX;
+      float ayAC = vibDado.ay - _dcY;
+      float azAC = vibDado.az - _dcZ;
+      _dcX += alfaDC * (vibDado.ax - _dcX);
+      _dcY += alfaDC * (vibDado.ay - _dcY);
+      _dcZ += alfaDC * (vibDado.az - _dcZ);
+
+      vBruta = sqrt((axAC * axAC) + (ayAC * ayAC) + (azAC * azAC));
+      vBruta = outlierVib.filtrar(vBruta);
+      if (isnan(vBruta)) {
+        vBruta = 0.0f;
+        EventoDados ev = { 0.0f, 0.0f, 1, 0 };
+        eventBus.enfileirar(EventType::OUTLIER_VIB, ev);
+      }
+    }
+    {
+      EventoDados ev = { vBruta, 0.0f, 1, 0 };
+      eventBus.enfileirar(EventType::VIB_LEITURA, ev);
+    }
+
+    float tAtual = filtroTemp.filtrar(tBruta);
+    float vAtual = filtroVib.filtrar(vBruta);
+
+    HealthContext hCtx = {
+      .tempAvisoMax = 55.0f, .tempCritica = 65.0f,
+      .intervaloManutencaoH = 500.0f,
+      .basAtivo = basData.basAtivo, .basMedia = basData.basMedia,
+      .basStddev = basData.basStddev, .fatorK = basData.fatorK,
+      .vibAviso = cfgData.vibAviso, .vibCritica = cfgData.vibCritica
+    };
+
+    AlarmContext aCtx = {
+      .tempAvisoMax = 55.0f, .tempCritica = 65.0f,
+      .basAtivo = basData.basAtivo, .basMedia = basData.basMedia,
+      .basStddev = basData.basStddev, .fatorK = basData.fatorK,
+      .vibAviso = cfgData.vibAviso, .vibCritica = cfgData.vibCritica
+    };
+
+    float score = srvHealth.calcularScore(tAtual, vAtual,
+                                          horasTotais, hCtx);
+    const char* txtH   = srvHealth.classificar(score);
+    const char* txtAlm = srvAlarm.classificar(tAtual, vAtual, aCtx);
+
+    AlarmLevel almCode = AlarmLevel::NORMAL;
+    if (strcmp(txtAlm, "AVISO") == 0)   almCode = AlarmLevel::WARNING;
+    if (strcmp(txtAlm, "CRITICO") == 0) almCode = AlarmLevel::CRITICAL;
+
+    if (almCode != AlarmLevel::NORMAL) {
+      EventoDados ev = { tAtual, vAtual, 0, (uint8_t)almCode };
+      eventBus.enfileirar(EventType::TEMP_ALARME, ev);
+      eventBus.enfileirar(EventType::VIB_ALARME, ev);
+    }
+    {
+      EventoDados ev = { score, 0.0f, 2, 0 };
+      eventBus.enfileirar(EventType::SAUDE_ALTERADA, ev);
+    }
+
+    AnalyticsSample novaAmostra = {
+      .timestamp = agora, .temperature = tAtual,
+      .vibration = vAtual, .health = score,
+      .runtime = horasTotais, .alarm = almCode
+    };
+    analytics.processSample(novaAmostra);
+    AnalyticsResult res = analytics.getLatestResult();
+    SensorQualityReport qRel = sensorQuality.obterRelatorio();
+
+    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais,
+                         score, txtH, txtAlm, res, qRel);
   }
 }
 
@@ -298,6 +415,18 @@ void setup() {
   }
   ui.imprimirMensagem("OK", "UITask criada (nucleo 0, reserva).");
 
+  // Cria a tarefa de processamento de dados no nucleo 1
+  if (xTaskCreatePinnedToCore(
+        processingTask, "ProcessingTask", 4096, NULL, 3,
+        &processingTaskHandle, 1) != pdPASS) {
+    ui.imprimirErroFatal("Falha ao criar ProcessingTask.",
+                         "RAM insuficiente.");
+    esp_task_wdt_delete(NULL);
+    while (true) delay(1000);
+  }
+  ui.imprimirMensagem("OK", "ProcessingTask criada "
+                      "(nucleo 1, prioridade 3).");
+
   inicioSistemaMs = millis();
   ui.imprimirMensagem("INFO", "Monitoramento iniciado.");
 }
@@ -308,146 +437,15 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
 
-  // Instancia dinamica do contexto contendo apenas as referencias
   CommandContext cmdCtx = {
     .nvsHor = nvsHor,       .horData = horData,
     .nvsBas = nvsBas,       .basData = basData,
     .nvsCal = nvsCal,       .calData = calData,
     .nvsCfg = nvsCfg,       .cfgData = cfgData,
-    .driverVib = driverVib, .srvCal  = srvCal, 
+    .driverVib = driverVib, .srvCal  = srvCal,
     .ui = ui,               .i2cMutex = i2cMutex,
     .inicioSistemaMs = inicioSistemaMs
   };
 
-  // Despacha para o modulo UI encarregado
   cmdHandler.processar(cmdCtx);
-
-  // Se calibracao estiver ativa, nao imprime estatisticas
-  if (cmdHandler.isCalibrating()) return;
-
-  // Tenta receber dados do SensorTask (nao-bloqueante)
-  SensorQueueItem item;
-  if (xQueueReceive(sensorQueue, &item, 0) != pdTRUE) {
-    return;
-  }
-
-  {
-    uint32_t agora = item.timestamp;
-
-    // Atualiza horimetro em RAM
-    float horasRodando = (float)(agora - inicioSistemaMs) / 3600000.0f;
-    float horasTotais  = horData.horimetro + horasRodando;
-
-    // Dados recebidos do SensorTask (nucleo 1)
-    Ds18b20Data tempDado = item.temp;
-    Mpu6050Data vibDado  = item.vib;
-
-    // Validacao estrita e filtragem digital
-    float tBruta = tempDado.valido ? tempDado.temperaturaCelsius : 0.0f;
-    float vBruta = 0.0f;
-
-    sensorQuality.atualizarTemp(tempDado.valido);
-    if (tempDado.valido) {
-      tBruta = outlierTemp.filtrar(tBruta);
-      if (isnan(tBruta)) {
-        tBruta = 0.0f;
-        EventoDados ev = { tempDado.temperaturaCelsius, 0.0f, 0, 0 };
-        eventBus.enfileirar(EventType::OUTLIER_TEMP, ev);
-      }
-    }
-    {
-      EventoDados ev = { tBruta, 0.0f, 0, (uint8_t)(tempDado.valido ? 0 : 1) };
-      eventBus.enfileirar(EventType::TEMP_LEITURA, ev);
-    }
-    
-    sensorQuality.atualizarVib(vibDado.valido);
-    if (vibDado.valido) {
-      // Remove DC (gravidade + bias) de cada eixo via EMA lenta
-      // para que o RMS reflita apenas a componente vibratoria
-      const float alfaDC = 0.005f; // ~100s de constante no 500ms
-      float axAC = vibDado.ax - _dcX;
-      float ayAC = vibDado.ay - _dcY;
-      float azAC = vibDado.az - _dcZ;
-      _dcX += alfaDC * (vibDado.ax - _dcX);
-      _dcY += alfaDC * (vibDado.ay - _dcY);
-      _dcZ += alfaDC * (vibDado.az - _dcZ);
-
-      // RMS apenas da energia dinamica (AC)
-      vBruta = sqrt((axAC * axAC) + (ayAC * ayAC) + (azAC * azAC));
-
-      // Rejeita outliers por Z-Score
-      vBruta = outlierVib.filtrar(vBruta);
-      if (isnan(vBruta)) {
-        vBruta = 0.0f;
-        EventoDados ev = { 0.0f, 0.0f, 1, 0 };
-        eventBus.enfileirar(EventType::OUTLIER_VIB, ev);
-      }
-    }
-    {
-      EventoDados ev = { vBruta, 0.0f, 1, 0 };
-      eventBus.enfileirar(EventType::VIB_LEITURA, ev);
-    }
-
-    // Aplica filtro digital as leituras brutas
-    float tAtual = filtroTemp.filtrar(tBruta);
-    float vAtual = filtroVib.filtrar(vBruta);
-
-    // Estruturacao do contexto para Camada 4
-    HealthContext hCtx = {
-      .tempAvisoMax = 55.0f, .tempCritica = 65.0f, .intervaloManutencaoH = 500.0f,
-      .basAtivo = basData.basAtivo, .basMedia = basData.basMedia,
-      .basStddev = basData.basStddev, .fatorK = basData.fatorK,
-      .vibAviso = cfgData.vibAviso, .vibCritica = cfgData.vibCritica
-    };
-
-    AlarmContext aCtx = {
-      .tempAvisoMax = 55.0f, .tempCritica = 65.0f,
-      .basAtivo = basData.basAtivo, .basMedia = basData.basMedia,
-      .basStddev = basData.basStddev, .fatorK = basData.fatorK,
-      .vibAviso = cfgData.vibAviso, .vibCritica = cfgData.vibCritica
-    };
-
-    // Calculos Camada 4
-    // 1. Processamento e Classificacao (Instantâneo)
-    float score        = srvHealth.calcularScore(tAtual, vAtual, horasTotais, hCtx);
-    const char* txtH   = srvHealth.classificar(score);
-    const char* txtAlm = srvAlarm.classificar(tAtual, vAtual, aCtx);
-
-    // 2. Empacotamento Seguro via Enum Class
-    AlarmLevel almCode = AlarmLevel::NORMAL;
-    if (strcmp(txtAlm, "AVISO") == 0)   almCode = AlarmLevel::WARNING;
-    if (strcmp(txtAlm, "CRITICO") == 0) almCode = AlarmLevel::CRITICAL;
-
-    // Dispara eventos de alarme (T014)
-    if (almCode != AlarmLevel::NORMAL) {
-      EventoDados ev = { tAtual, vAtual, 0, (uint8_t)almCode };
-      eventBus.enfileirar(EventType::TEMP_ALARME, ev);
-      eventBus.enfileirar(EventType::VIB_ALARME, ev);
-    }
-    {
-      EventoDados ev = { score, 0.0f, 2, 0 };
-      eventBus.enfileirar(EventType::SAUDE_ALTERADA, ev);
-    }
-
-    AnalyticsSample novaAmostra = {
-      .timestamp   = agora,
-      .temperature = tAtual,
-      .vibration   = vAtual,
-      .health      = score,
-      .runtime     = horasTotais,
-      .alarm       = almCode
-    };
-    
-    // 3. Insercao na Fachada Analitica
-    analytics.processSample(novaAmostra);
-
-    // 4. Extracao sob demanda da API (Regressao Linear + Medias)
-    AnalyticsResult res = analytics.getLatestResult();
-
-    SensorQualityReport qRel = sensorQuality.obterRelatorio();
-
-    // 5. Renderizacao (sincrona, core 1 — sem contenicao serial)
-    ui.imprimirRelatorio(agora, tAtual, vAtual, horasTotais,
-                         score, txtH, txtAlm, res, qRel);
-  }
 }
