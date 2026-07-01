@@ -88,6 +88,7 @@ struct SensorQueueItem {
 
 xQueueHandle      sensorQueue;
 SemaphoreHandle_t i2cMutex;
+SemaphoreHandle_t serialMutex;
 TaskHandle_t      sensorTaskHandle;
 TaskHandle_t      eventTaskHandle;
 TaskHandle_t      uiTaskHandle;
@@ -201,10 +202,13 @@ static void uiTask(void* pvParams) {
   UIReportItem item;
   while (true) {
     if (xQueueReceive(uiReportQueue, &item, portMAX_DELAY) == pdTRUE) {
-      ui.imprimirRelatorio(
-        item.timestamp, item.temp, item.vib, item.horas,
-        item.score, item.clHealth, item.clAlarme,
-        item.analytics, item.qual);
+      if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+        ui.imprimirRelatorio(
+          item.timestamp, item.temp, item.vib, item.horas,
+          item.score, item.clHealth, item.clAlarme,
+          item.analytics, item.qual);
+        xSemaphoreGive(serialMutex);
+      }
     }
   }
 }
@@ -276,10 +280,11 @@ void setup() {
   ui.imprimirMensagem("OK", "Barramento de eventos inicializado.");
 
   // Criacao do mutex I2C e fila de sensores (Fase 1)
-  i2cMutex   = xSemaphoreCreateMutex();
+  i2cMutex    = xSemaphoreCreateMutex();
+  serialMutex = xSemaphoreCreateMutex();
   sensorQueue = xQueueCreate(1, sizeof(SensorQueueItem));
   
-  if (i2cMutex == NULL || sensorQueue == NULL) {
+  if (i2cMutex == NULL || serialMutex == NULL || sensorQueue == NULL) {
     ui.imprimirErroFatal("Falha ao criar recursos FreeRTOS.",
                          "RAM insuficiente.");
     esp_task_wdt_delete(NULL);
@@ -344,6 +349,7 @@ void loop() {
     .nvsCfg = nvsCfg,       .cfgData = cfgData,
     .driverVib = driverVib, .srvCal  = srvCal, 
     .ui = ui,               .i2cMutex = i2cMutex,
+    .serialMutex = serialMutex,
     .inicioSistemaMs = inicioSistemaMs
   };
 

@@ -148,6 +148,9 @@ enum : uint8_t { CAL_IDLE, CAL_CONFIRM, CAL_SAMPLING, CAL_DONE };
 //  Nao deve ser chamada enquanto emCalibracao for true.
 // =============================================================
 void CommandHandler::processar(CommandContext& ctx) {
+  // Protege todo output serial contra interleaving entre tarefas
+  xSemaphoreTake(ctx.serialMutex, portMAX_DELAY);
+
   // ---- Processa calibracao a cada ciclo (nao-bloqueante) ----
   if (_calEstado != CAL_IDLE) {
     bool finalizado = false;
@@ -311,11 +314,17 @@ void CommandHandler::processar(CommandContext& ctx) {
 
     // Enquanto a calibracao estiver ativa, nao processa
     // comandos seriais — retorna direto ao loop()
-    if (_calEstado != CAL_IDLE) return;
+    if (_calEstado != CAL_IDLE) {
+      xSemaphoreGive(ctx.serialMutex);
+      return;
+    }
   }
 
   // ---- Comandos seriais ----
-  if (Serial.available() == 0) return;
+  if (Serial.available() == 0) {
+    xSemaphoreGive(ctx.serialMutex);
+    return;
+  }
   char cmd = toupper(Serial.read());
 
   switch (cmd) {
@@ -1085,4 +1094,5 @@ void CommandHandler::processar(CommandContext& ctx) {
       break;
     }
   }
+  xSemaphoreGive(ctx.serialMutex);
 }
